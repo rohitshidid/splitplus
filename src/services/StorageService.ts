@@ -90,6 +90,18 @@ export const StorageService = {
         return groups.filter(g => g.members.includes(userId));
     },
 
+    deleteGroup: (groupId: string) => {
+        // Remove Group
+        let groups = StorageService.getGroups();
+        groups = groups.filter(g => g.id !== groupId);
+        StorageService._save(K_GROUPS, groups);
+
+        // Remove associated Expenses
+        let expenses = StorageService.getExpenses();
+        expenses = expenses.filter(e => e.groupId !== groupId);
+        StorageService._save(K_EXPENSES, expenses);
+    },
+
     // --- Expenses ---
     getExpenses: (): Expense[] => StorageService._get<Expense>(K_EXPENSES),
 

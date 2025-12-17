@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { StorageService } from "@/services/StorageService";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { User } from "@/types";
 
 export default function CreateGroupPage() {
@@ -70,6 +71,9 @@ export default function CreateGroupPage() {
 
     return (
         <div className="container" style={{ padding: "2rem 1rem", maxWidth: "500px" }}>
+            <Link href="/dashboard" style={{ color: "var(--muted)", fontSize: "0.875rem", marginBottom: "1rem", display: "inline-block" }}>
+                ← Back to Dashboard
+            </Link>
             <h1 style={{ fontSize: "1.75rem", marginBottom: "1.5rem" }}>Create New Group</h1>
 
             <div className="card">

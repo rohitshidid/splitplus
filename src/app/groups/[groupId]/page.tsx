@@ -153,9 +153,23 @@ export default function GroupPage() {
                 ← Back to Dashboard
             </Link>
 
-            <header style={{ marginBottom: "2rem" }}>
-                <h1 style={{ fontSize: "2rem", marginBottom: "0.5rem" }}>{group.name}</h1>
-                <p style={{ color: "var(--muted)" }}>Group ID: {group.id.slice(0, 8)}...</p>
+            <header style={{ marginBottom: "2rem", display: "flex", justifyContent: "space-between", alignItems: "start" }}>
+                <div>
+                    <h1 style={{ fontSize: "2rem", marginBottom: "0.5rem" }}>{group.name}</h1>
+                    <p style={{ color: "var(--muted)" }}>Group ID: {group.id.slice(0, 8)}...</p>
+                </div>
+                <button
+                    onClick={() => {
+                        if (window.confirm("Are you sure you want to delete this group?")) {
+                            StorageService.deleteGroup(group.id);
+                            router.push("/dashboard");
+                        }
+                    }}
+                    className="btn"
+                    style={{ background: "var(--error)", color: "white", fontSize: "0.875rem", padding: "0.5rem 1rem" }}
+                >
+                    Delete Group
+                </button>
             </header>
 
             {/* Balances Section */}
