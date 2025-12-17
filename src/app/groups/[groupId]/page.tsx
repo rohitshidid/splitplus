@@ -30,6 +30,10 @@ export default function GroupPage() {
 
     const [error, setError] = useState("");
 
+    const [requests, setRequests] = useState<User[]>([]);
+    const [inviteName, setInviteName] = useState("");
+    const [inviteMsg, setInviteMsg] = useState("");
+
     const refreshData = () => {
         if (!groupId) return;
         const g = StorageService.getGroups().find(g => g.id === groupId);
@@ -39,7 +43,37 @@ export default function GroupPage() {
         }
         setGroup(g);
         setExpenses(StorageService.getGroupExpenses(groupId));
-        setMembers(StorageService.getUsers().filter(u => g.members.includes(u.id)));
+
+        const allUsers = StorageService.getUsers();
+        setMembers(allUsers.filter(u => g.members.includes(u.id)));
+        setRequests(allUsers.filter(u => g.joinRequests?.includes(u.id)));
+    };
+
+    const handleApprove = (userId: string) => {
+        StorageService.approveJoinRequest(groupId, userId);
+        refreshData();
+    };
+
+    const handleReject = (userId: string) => {
+        StorageService.rejectJoinRequest(groupId, userId);
+        refreshData();
+    };
+
+    const handleInvite = () => {
+        if (!inviteName.trim()) return;
+        const userToInvite = StorageService.findUserByUsername(inviteName);
+        if (!userToInvite) {
+            setInviteMsg("User not found.");
+            return;
+        }
+        if (members.some(m => m.id === userToInvite.id)) {
+            setInviteMsg("Already a member.");
+            return;
+        }
+
+        StorageService.inviteMember(groupId, userToInvite.id);
+        setInviteMsg("Invite sent!");
+        setInviteName("");
     };
 
     useEffect(() => {
@@ -190,7 +224,7 @@ export default function GroupPage() {
         }
     };
 
-    if (loading || !group) return <div className="container p-4">Loading...</div>;
+    if (loading || !user || !group) return <div className="container p-4">Loading...</div>;
 
     return (
         <div className="container" style={{ padding: "2rem 1rem" }}>
@@ -201,7 +235,19 @@ export default function GroupPage() {
             <header style={{ marginBottom: "2rem", display: "flex", justifyContent: "space-between", alignItems: "start" }}>
                 <div>
                     <h1 style={{ fontSize: "2rem", marginBottom: "0.5rem" }}>{group.name}</h1>
-                    <p style={{ color: "var(--muted)" }}>Group ID: {group.id.slice(0, 8)}...</p>
+                    <p
+                        style={{ color: "var(--muted)", cursor: "pointer", display: "flex", alignItems: "center", gap: "0.5rem" }}
+                        onClick={() => {
+                            navigator.clipboard.writeText(group.id);
+                            alert("Group ID copied to clipboard!");
+                        }}
+                        title="Click to copy full ID"
+                    >
+                        Group ID: {group.id.slice(0, 8)}... 📋
+                    </p>
+                    <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginTop: "1rem" }}>
+                        <p style={{ fontSize: "0.875rem", color: "var(--muted)" }}>Created by {members.find(m => m.id === group.createdBy)?.username || "Unknown"}</p>
+                    </div>
                 </div>
                 <button
                     onClick={() => {
@@ -216,6 +262,39 @@ export default function GroupPage() {
                     Delete Group
                 </button>
             </header>
+
+            {/* Admin Section: Join Requests */}
+            {user.id === group.createdBy && requests.length > 0 && (
+                <section style={{ marginBottom: "2rem", padding: "1rem", background: "var(--card-bg)", border: "1px solid var(--primary)", borderRadius: "var(--radius)" }}>
+                    <h2 style={{ fontSize: "1rem", marginBottom: "1rem", color: "var(--primary)" }}>Join Requests 🔔</h2>
+                    <div style={{ display: "grid", gap: "0.5rem" }}>
+                        {requests.map(u => (
+                            <div key={u.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                <span>{u.username} wants to join</span>
+                                <div style={{ display: "flex", gap: "0.5rem" }}>
+                                    <button onClick={() => handleApprove(u.id)} className="btn btn-primary" style={{ padding: "0.25rem 0.75rem", fontSize: "0.75rem" }}>Approve</button>
+                                    <button onClick={() => handleReject(u.id)} className="btn" style={{ padding: "0.25rem 0.75rem", fontSize: "0.75rem", background: "var(--muted-light)" }}>Reject</button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </section>
+            )}
+
+            {/* Invite Member Section */}
+            <section style={{ marginBottom: "2rem" }}>
+                <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                    <input
+                        className="input"
+                        placeholder="Invite username..."
+                        value={inviteName}
+                        onChange={e => setInviteName(e.target.value)}
+                        style={{ maxWidth: "200px" }}
+                    />
+                    <button onClick={handleInvite} className="btn" style={{ background: "var(--muted-light)" }}>Invite</button>
+                    {inviteMsg && <span style={{ fontSize: "0.875rem", color: inviteMsg.includes("sent") ? "var(--success)" : "var(--error)" }}>{inviteMsg}</span>}
+                </div>
+            </section>
 
             {/* Balances Section */}
             <section style={{ marginBottom: "2rem" }}>

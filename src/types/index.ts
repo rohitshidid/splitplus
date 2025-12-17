@@ -8,9 +8,11 @@ export interface User {
 export interface Group {
     id: string;
     name: string;
-    members: string[]; // List of User IDs
+    members: string[]; // Active members
+    pendingMembers: string[]; // Invited, waiting for acceptance
+    joinRequests: string[]; // Requested to join, waiting for approval
     image?: string; // Optional group icon
-    createdBy: string;
+    createdBy: string; // Admin ID
     createdAt: number;
 }
 

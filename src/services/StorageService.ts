@@ -69,15 +69,15 @@ export const StorageService = {
     },
 
     // --- Groups ---
-    getGroups: (): Group[] => StorageService._get<Group>(K_GROUPS),
-
-    createGroup: (name: string, memberIds: string[], currentUserId: string): Group => {
+    createGroup: (name: string, memberIds: string[], creatorId: string): Group => {
         const groups = StorageService.getGroups();
         const newGroup: Group = {
             id: crypto.randomUUID(),
             name,
-            members: [...new Set([...memberIds, currentUserId])], // Ensure creator is included
-            createdBy: currentUserId,
+            members: [creatorId], // Only creator is active initially
+            pendingMembers: memberIds.filter(id => id !== creatorId), // Others are pending
+            joinRequests: [],
+            createdBy: creatorId,
             createdAt: Date.now(),
         };
         groups.push(newGroup);
@@ -85,9 +85,25 @@ export const StorageService = {
         return newGroup;
     },
 
+    getGroups: (): Group[] => {
+        const groups = StorageService._get<Group>(K_GROUPS);
+        // Migration for legacy groups
+        return groups.map(g => ({
+            ...g,
+            pendingMembers: g.pendingMembers || [],
+            joinRequests: g.joinRequests || [],
+            createdBy: g.createdBy || (g.members[0] || ""), // Fallback to first member
+        }));
+    },
+
     getUserGroups: (userId: string): Group[] => {
         const groups = StorageService.getGroups();
         return groups.filter(g => g.members.includes(userId));
+    },
+
+    getPendingInvites: (userId: string): Group[] => {
+        const groups = StorageService.getGroups();
+        return groups.filter(g => g.pendingMembers?.includes(userId));
     },
 
     deleteGroup: (groupId: string) => {
@@ -100,6 +116,68 @@ export const StorageService = {
         let expenses = StorageService.getExpenses();
         expenses = expenses.filter(e => e.groupId !== groupId);
         StorageService._save(K_EXPENSES, expenses);
+    },
+
+    // --- Approvals & Invites ---
+
+    requestJoin: (groupId: string, userId: string) => {
+        const groups = StorageService.getGroups();
+        const group = groups.find(g => g.id === groupId);
+        if (group && !group.members.includes(userId) && !group.joinRequests.includes(userId)) {
+            group.joinRequests.push(userId);
+            StorageService._save(K_GROUPS, groups);
+        }
+    },
+
+    inviteMember: (groupId: string, userId: string) => {
+        const groups = StorageService.getGroups();
+        const group = groups.find(g => g.id === groupId);
+        if (group && !group.members.includes(userId) && !group.pendingMembers.includes(userId)) {
+            group.pendingMembers.push(userId);
+            StorageService._save(K_GROUPS, groups);
+        }
+    },
+
+    acceptInvite: (groupId: string, userId: string) => {
+        const groups = StorageService.getGroups();
+        const group = groups.find(g => g.id === groupId);
+        if (group) {
+            group.pendingMembers = group.pendingMembers.filter(id => id !== userId);
+            if (!group.members.includes(userId)) {
+                group.members.push(userId);
+            }
+            StorageService._save(K_GROUPS, groups);
+        }
+    },
+
+    declineInvite: (groupId: string, userId: string) => {
+        const groups = StorageService.getGroups();
+        const group = groups.find(g => g.id === groupId);
+        if (group) {
+            group.pendingMembers = group.pendingMembers.filter(id => id !== userId);
+            StorageService._save(K_GROUPS, groups);
+        }
+    },
+
+    approveJoinRequest: (groupId: string, userId: string) => {
+        const groups = StorageService.getGroups();
+        const group = groups.find(g => g.id === groupId);
+        if (group) {
+            group.joinRequests = group.joinRequests.filter(id => id !== userId);
+            if (!group.members.includes(userId)) {
+                group.members.push(userId);
+            }
+            StorageService._save(K_GROUPS, groups);
+        }
+    },
+
+    rejectJoinRequest: (groupId: string, userId: string) => {
+        const groups = StorageService.getGroups();
+        const group = groups.find(g => g.id === groupId);
+        if (group) {
+            group.joinRequests = group.joinRequests.filter(id => id !== userId);
+            StorageService._save(K_GROUPS, groups);
+        }
     },
 
     // --- Expenses ---
