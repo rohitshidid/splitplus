@@ -36,18 +36,15 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     }, []);
 
     const login = async (u: string, p: string) => {
-        // Simulate async
-        await new Promise((r) => setTimeout(r, 500));
-        const loggedUser = StorageService.login(u, p);
+        const loggedUser = await StorageService.login(u, p);
         setUser(loggedUser);
         router.push("/dashboard");
     };
 
     const signup = async (u: string, p: string) => {
-        await new Promise((r) => setTimeout(r, 500));
-        const newUser = StorageService.createUser(u, p);
+        const newUser = await StorageService.createUser(u, p);
         // Auto login after signup
-        StorageService.login(u, p);
+        await StorageService.login(u, p);
         setUser(newUser);
         router.push("/dashboard");
     };
