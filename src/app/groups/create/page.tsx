@@ -67,8 +67,8 @@ export default function CreateGroupPage() {
         }
 
         try {
-            StorageService.createGroup(name, memberIds, user.id, useSheet ? 'SHEET' : 'LOCAL', sheetUrl);
-            router.push("/dashboard");
+            const newGroup = StorageService.createGroup(name, memberIds, user.id, useSheet ? 'SHEET' : 'LOCAL', sheetUrl);
+            router.push(`/groups/view?id=${newGroup.id}`);
         } catch (err) {
             setError("Failed to create group.");
         }

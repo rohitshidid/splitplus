@@ -132,25 +132,35 @@ export const StorageService = {
         }
     },
 
-    // --- Google Sheets Sync ---
+    // --- Google Sheets Sync (Updated) ---
 
     syncToSheet: async (group: Group) => {
         if (group.storageType !== 'SHEET' || !group.connectionString) return;
 
+        // Prepare comprehensive member list with status
+        const allUsers = StorageService.getUsers(); // This gets local users.
+        // Note: If using Global Auth, we might need names from IDs that aren't local.
+        // For now, assume users we deal with have local presence or minimal info.
+
+        const membersPayload = [
+            ...group.members.map(id => ({ id, username: allUsers.find(u => u.id === id)?.username || "User", status: "active" })),
+            ...(group.pendingMembers || []).map(id => ({ id, username: allUsers.find(u => u.id === id)?.username || "User", status: "pending" })),
+            ...(group.joinRequests || []).map(id => ({ id, username: allUsers.find(u => u.id === id)?.username || "User", status: "requested" }))
+        ];
+
         const payload = {
             meta: { id: group.id, name: group.name, createdBy: group.createdBy },
-            members: StorageService.getUsers().filter(u => group.members.includes(u.id)),
+            members: membersPayload,
             expenses: StorageService.getGroupExpenses(group.id)
         };
 
         try {
             await fetch(group.connectionString, {
                 method: "POST",
-                mode: "no-cors", // GAS POST often requires no-cors if not expecting standard JSON response structure usable by browser directly due to CORS
-                headers: { "Content-Type": "application/json" },
+                mode: "no-cors",
+                headers: { "Content-Type": "text/plain;charset=utf-8" }, // text/plain enables simple POST without preflight
                 body: JSON.stringify({ action: "SYNC_GROUP", payload })
             });
-            // Note: no-cors means we can't read response, but GAS will receive it.
         } catch (err) {
             console.error("Failed to sync to sheet", err);
         }
@@ -164,19 +174,44 @@ export const StorageService = {
             const data = await res.json();
 
             if (data.status === "success" && data.data) {
-                // Merge Logic? For now, Sheet is Truth.
-                // 1. Update Group Members if changed? 
-                // (Actually, app is source of truth for IDs, Sheet is just storage. 
-                // But if other users update sheet, we need to reflect that).
+                // 1. Sync Members & Status
+                // We need to map the sheet's "members + status" back to the group object
+                const sheetMembers = data.data.members || [];
+                const active: string[] = [];
+                const pending: string[] = [];
+                const requests: string[] = [];
 
-                // For MVP: We just update Expenses from Sheet.
-                // Re-hydrate expenses
+                sheetMembers.forEach((row: any) => {
+                    if (row.status === "active") active.push(row.id);
+                    else if (row.status === "pending") pending.push(row.id);
+                    else if (row.status === "requested") requests.push(row.id);
+
+                    // Side effect: Ensure we have this user in our local "cache" so names show up?
+                    // If we don't have them, we might create a stub user.
+                    let localUsers = StorageService._get<User>(K_USERS);
+                    if (!localUsers.find(u => u.id === row.id)) {
+                        localUsers.push({ id: row.id, username: row.username, password: "", createdAt: Date.now() });
+                        StorageService._save(K_USERS, localUsers);
+                    }
+                });
+
+                // Update Group
+                let groups = StorageService.getGroups();
+                const groupIndex = groups.findIndex(g => g.id === group.id);
+                if (groupIndex !== -1) {
+                    groups[groupIndex].members = active;
+                    groups[groupIndex].pendingMembers = pending;
+                    groups[groupIndex].joinRequests = requests;
+                    // Sync meta?
+                    if (data.data.meta && data.data.meta.name) groups[groupIndex].name = data.data.meta.name;
+
+                    StorageService._save(K_GROUPS, groups);
+                }
+
+                // 2. Sync Expenses
                 const remoteExpenses = data.data.expenses;
-                // Filter out current group expenses and replace
                 let allExpenses = StorageService.getExpenses();
                 allExpenses = allExpenses.filter(e => e.groupId !== group.id);
-
-                // Add remote
                 allExpenses.push(...remoteExpenses);
                 StorageService._save(K_EXPENSES, allExpenses);
             }
