@@ -112,7 +112,7 @@ export default function CreateGroupPage() {
                             <p style={{ fontSize: "0.8rem", color: "var(--muted)", marginBottom: "0.5rem" }}>
                                 1. Create a Google Sheet.<br />
                                 2. Extensions &gt; Apps Script.<br />
-                                3. Paste <a href="/google_apps_script.js" target="_blank" style={{ color: "var(--primary)" }}>this script</a>.<br />
+                                3. Paste <a href="../../google_apps_script.js" target="_blank" style={{ color: "var(--primary)" }}>this script</a>.<br />
                                 4. Deploy &gt; Web App &gt; Anyone.<br />
                                 5. Authorize it all required permissions.<br />
                                 6. Copy the Web App URL.<br />
