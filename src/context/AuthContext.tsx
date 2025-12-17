@@ -43,8 +43,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
     const signup = async (u: string, p: string) => {
         const newUser = await StorageService.createUser(u, p);
-        // Auto login after signup
-        await StorageService.login(u, p);
+        // User session is already set by createUser
         setUser(newUser);
         router.push("/dashboard");
     };
