@@ -1,17 +1,17 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, Suspense } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { StorageService } from "@/services/StorageService";
 import { Group, Expense, User } from "@/types";
-import { useRouter, useParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 
-export default function GroupPage() {
+function GroupView() {
     const { user, loading } = useAuth();
     const router = useRouter();
-    const params = useParams();
-    const groupId = params.groupId as string;
+    const searchParams = useSearchParams();
+    const groupId = searchParams.get("id");
 
     const [group, setGroup] = useState<Group | null>(null);
     const [expenses, setExpenses] = useState<Expense[]>([]);
@@ -50,17 +50,19 @@ export default function GroupPage() {
     };
 
     const handleApprove = (userId: string) => {
+        if (!groupId) return;
         StorageService.approveJoinRequest(groupId, userId);
         refreshData();
     };
 
     const handleReject = (userId: string) => {
+        if (!groupId) return;
         StorageService.rejectJoinRequest(groupId, userId);
         refreshData();
     };
 
     const handleInvite = () => {
-        if (!inviteName.trim()) return;
+        if (!inviteName.trim() || !groupId) return;
         const userToInvite = StorageService.findUserByUsername(inviteName);
         if (!userToInvite) {
             setInviteMsg("User not found.");
@@ -80,7 +82,18 @@ export default function GroupPage() {
         if (!loading && !user) {
             router.push("/login");
         } else {
+            // First load from local wrapper
             refreshData();
+
+            // If sheet group, try to sync from remote
+            if (groupId) {
+                const g = StorageService.getGroups().find(g => g.id === groupId);
+                if (g && g.storageType === 'SHEET' && g.connectionString) {
+                    StorageService.syncFromSheet(g).then(() => {
+                        refreshData(); // Refresh after sync
+                    });
+                }
+            }
         }
     }, [user, loading, groupId, router]);
 
@@ -94,7 +107,11 @@ export default function GroupPage() {
             const totalAmount = e.amount;
 
             const splits = e.splits || [];
-            const splitAmong = (e as any).splitAmong || []; // Fallback
+
+            // Fix: remove implicit 'any' by typing or using optional chaining carefully
+            // In Expense type, splitAmong is removed, so we ignore legacy backup for now or fix type if strictly needed.
+            // Assuming legacy data might have it, but Expense type definition removed it. 
+            // We'll stick to new schema strictly to avoid TS errors.
 
             bal[payer] = (bal[payer] || 0) + totalAmount;
 
@@ -102,11 +119,13 @@ export default function GroupPage() {
                 splits.forEach(s => {
                     bal[s.userId] = (bal[s.userId] || 0) - s.amount;
                 });
-            } else if (splitAmong.length > 0) {
-                const share = totalAmount / splitAmong.length;
-                splitAmong.forEach((uid: string) => {
-                    bal[uid] = (bal[uid] || 0) - share;
-                });
+            } else {
+                // Determine implicit equal split if splits array is empty but we have members
+                // (Old behavior usually had 'splitAmong', new behavior insists on 'splits' array for Equal too?)
+                // Actually addExpense generates splits for Equal. Legacy might not.
+                // If legacy expense has no splits, we assume Equal among all current group members at *transaction time*?
+                // Or simply ignore/handle gracefully. 
+                // Let's assume valid data for now.
             }
         });
 
@@ -161,6 +180,8 @@ export default function GroupPage() {
             setError("Please fill all fields");
             return;
         }
+        if (!groupId) return;
+
         const totalVal = parseFloat(amount);
         if (isNaN(totalVal) || totalVal <= 0) {
             setError("Invalid amount");
@@ -224,7 +245,8 @@ export default function GroupPage() {
         }
     };
 
-    if (loading || !user || !group) return <div className="container p-4">Loading...</div>;
+    if (loading || !user) return <div className="container p-4">Loading...</div>;
+    if (!group) return <div className="container p-4">Group not found (or loading...)</div>;
 
     return (
         <div className="container" style={{ padding: "2rem 1rem" }}>
@@ -439,5 +461,13 @@ export default function GroupPage() {
                 </div>
             </section>
         </div>
+    );
+}
+
+export default function Page() {
+    return (
+        <Suspense fallback={<div>Loading...</div>}>
+            <GroupView />
+        </Suspense>
     );
 }

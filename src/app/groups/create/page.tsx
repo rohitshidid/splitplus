@@ -52,16 +52,23 @@ export default function CreateGroupPage() {
         setAddedMembers(addedMembers.filter(m => m.id !== id));
     };
 
+    const [useSheet, setUseSheet] = useState(false);
+    const [sheetUrl, setSheetUrl] = useState("");
+
     const handleCreate = () => {
         if (!user) return;
         if (!name.trim()) {
             setError("Group name is required.");
             return;
         }
+        if (useSheet && !sheetUrl.startsWith("https://script.google.com")) {
+            setError("Please enter a valid Google Apps Script Web App URL.");
+            return;
+        }
 
         try {
-            StorageService.createGroup(name, memberIds, user.id);
-            router.push("/dashboard");
+            const newGroup = StorageService.createGroup(name, memberIds, user.id, useSheet ? 'SHEET' : 'LOCAL', sheetUrl);
+            router.push(`/groups/view?id=${newGroup.id}`);
         } catch (err) {
             setError("Failed to create group.");
         }
@@ -86,6 +93,41 @@ export default function CreateGroupPage() {
                         onChange={(e) => setName(e.target.value)}
                         placeholder="e.g. Hawaii Trip"
                     />
+                </div>
+
+                <div style={{ marginBottom: "1.5rem", padding: "1rem", background: "var(--muted-light)", borderRadius: "var(--radius)" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.5rem" }}>
+                        <input
+                            type="checkbox"
+                            id="sheetToggle"
+                            checked={useSheet}
+                            onChange={e => setUseSheet(e.target.checked)}
+                            style={{ width: "auto" }}
+                        />
+                        <label htmlFor="sheetToggle" style={{ fontWeight: 500 }}>Use Google Sheet Database</label>
+                    </div>
+
+                    {useSheet && (
+                        <div style={{ marginTop: "1rem" }}>
+                            <p style={{ fontSize: "0.8rem", color: "var(--muted)", marginBottom: "0.5rem" }}>
+                                1. Create a Google Sheet.<br />
+                                2. Extensions &gt; Apps Script.<br />
+                                3. Paste <a href="/google_apps_script.js" target="_blank" style={{ color: "var(--primary)" }}>this script</a>.<br />
+                                4. Deploy &gt; Web App &gt; Anyone.<br />
+                                5. Authorize it all required permissions.<br />
+                                6. Copy the Web App URL.<br />
+                                7. Run the script once.<br />
+                                8. Paste URL below:
+                            </p>
+                            <input
+                                type="text"
+                                className="input"
+                                value={sheetUrl}
+                                onChange={e => setSheetUrl(e.target.value)}
+                                placeholder="https://script.google.com/macros/s/..."
+                            />
+                        </div>
+                    )}
                 </div>
 
                 <div style={{ marginBottom: "1.5rem" }}>

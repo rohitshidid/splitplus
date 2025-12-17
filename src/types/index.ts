@@ -14,6 +14,8 @@ export interface Group {
     image?: string; // Optional group icon
     createdBy: string; // Admin ID
     createdAt: number;
+    storageType: 'LOCAL' | 'SHEET';
+    connectionString?: string; // GAS Web App URL
 }
 
 export type SplitType = 'EQUAL' | 'EXACT' | 'PERCENTAGE';

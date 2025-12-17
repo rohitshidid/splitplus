@@ -69,7 +69,7 @@ export const StorageService = {
     },
 
     // --- Groups ---
-    createGroup: (name: string, memberIds: string[], creatorId: string): Group => {
+    createGroup: (name: string, memberIds: string[], creatorId: string, storageType: 'LOCAL' | 'SHEET' = 'LOCAL', connectionString = ""): Group => {
         const groups = StorageService.getGroups();
         const newGroup: Group = {
             id: crypto.randomUUID(),
@@ -79,9 +79,17 @@ export const StorageService = {
             joinRequests: [],
             createdBy: creatorId,
             createdAt: Date.now(),
+            storageType,
+            connectionString
         };
         groups.push(newGroup);
         StorageService._save(K_GROUPS, groups);
+
+        // If Sheet, initial sync (fire and forget for now, or could await)
+        if (storageType === 'SHEET' && connectionString) {
+            StorageService.syncToSheet(newGroup);
+        }
+
         return newGroup;
     },
 
@@ -93,6 +101,8 @@ export const StorageService = {
             pendingMembers: g.pendingMembers || [],
             joinRequests: g.joinRequests || [],
             createdBy: g.createdBy || (g.members[0] || ""), // Fallback to first member
+            storageType: g.storageType || 'LOCAL',
+            connectionString: g.connectionString || ""
         }));
     },
 
@@ -109,13 +119,105 @@ export const StorageService = {
     deleteGroup: (groupId: string) => {
         // Remove Group
         let groups = StorageService.getGroups();
-        groups = groups.filter(g => g.id !== groupId);
-        StorageService._save(K_GROUPS, groups);
+        const groupIndex = groups.findIndex(g => g.id === groupId);
 
-        // Remove associated Expenses
-        let expenses = StorageService.getExpenses();
-        expenses = expenses.filter(e => e.groupId !== groupId);
-        StorageService._save(K_EXPENSES, expenses);
+        if (groupIndex !== -1) {
+            groups.splice(groupIndex, 1);
+            StorageService._save(K_GROUPS, groups);
+
+            // Remove associated Expenses
+            let expenses = StorageService.getExpenses();
+            expenses = expenses.filter(e => e.groupId !== groupId);
+            StorageService._save(K_EXPENSES, expenses);
+        }
+    },
+
+    // --- Google Sheets Sync (Updated) ---
+
+    syncToSheet: async (group: Group) => {
+        if (group.storageType !== 'SHEET' || !group.connectionString) return;
+
+        // Prepare comprehensive member list with status
+        const allUsers = StorageService.getUsers(); // This gets local users.
+        // Note: If using Global Auth, we might need names from IDs that aren't local.
+        // For now, assume users we deal with have local presence or minimal info.
+
+        const membersPayload = [
+            ...group.members.map(id => ({ id, username: allUsers.find(u => u.id === id)?.username || "User", status: "active" })),
+            ...(group.pendingMembers || []).map(id => ({ id, username: allUsers.find(u => u.id === id)?.username || "User", status: "pending" })),
+            ...(group.joinRequests || []).map(id => ({ id, username: allUsers.find(u => u.id === id)?.username || "User", status: "requested" }))
+        ];
+
+        const payload = {
+            meta: { id: group.id, name: group.name, createdBy: group.createdBy },
+            members: membersPayload,
+            expenses: StorageService.getGroupExpenses(group.id)
+        };
+
+        try {
+            await fetch(group.connectionString, {
+                method: "POST",
+                mode: "no-cors",
+                headers: { "Content-Type": "text/plain;charset=utf-8" }, // text/plain enables simple POST without preflight
+                body: JSON.stringify({ action: "SYNC_GROUP", payload })
+            });
+        } catch (err) {
+            console.error("Failed to sync to sheet", err);
+        }
+    },
+
+    syncFromSheet: async (group: Group) => {
+        if (group.storageType !== 'SHEET' || !group.connectionString) return;
+
+        try {
+            const res = await fetch(`${group.connectionString}?action=GET_ALL`);
+            const data = await res.json();
+
+            if (data.status === "success" && data.data) {
+                // 1. Sync Members & Status
+                // We need to map the sheet's "members + status" back to the group object
+                const sheetMembers = data.data.members || [];
+                const active: string[] = [];
+                const pending: string[] = [];
+                const requests: string[] = [];
+
+                sheetMembers.forEach((row: any) => {
+                    if (row.status === "active") active.push(row.id);
+                    else if (row.status === "pending") pending.push(row.id);
+                    else if (row.status === "requested") requests.push(row.id);
+
+                    // Side effect: Ensure we have this user in our local "cache" so names show up?
+                    // If we don't have them, we might create a stub user.
+                    let localUsers = StorageService._get<User>(K_USERS);
+                    if (!localUsers.find(u => u.id === row.id)) {
+                        localUsers.push({ id: row.id, username: row.username, password: "", createdAt: Date.now() });
+                        StorageService._save(K_USERS, localUsers);
+                    }
+                });
+
+                // Update Group
+                let groups = StorageService.getGroups();
+                const groupIndex = groups.findIndex(g => g.id === group.id);
+                if (groupIndex !== -1) {
+                    groups[groupIndex].members = active;
+                    groups[groupIndex].pendingMembers = pending;
+                    groups[groupIndex].joinRequests = requests;
+                    // Sync meta?
+                    if (data.data.meta && data.data.meta.name) groups[groupIndex].name = data.data.meta.name;
+
+                    StorageService._save(K_GROUPS, groups);
+                }
+
+                // 2. Sync Expenses
+                const remoteExpenses = data.data.expenses;
+                let allExpenses = StorageService.getExpenses();
+                allExpenses = allExpenses.filter(e => e.groupId !== group.id);
+                allExpenses.push(...remoteExpenses);
+                StorageService._save(K_EXPENSES, allExpenses);
+            }
+        } catch (err) {
+            console.error("Failed to sync from sheet", err);
+        }
     },
 
     // --- Approvals & Invites ---
@@ -135,6 +237,8 @@ export const StorageService = {
         if (group && !group.members.includes(userId) && !group.pendingMembers.includes(userId)) {
             group.pendingMembers.push(userId);
             StorageService._save(K_GROUPS, groups);
+
+            if (group.storageType === 'SHEET') StorageService.syncToSheet(group);
         }
     },
 
@@ -147,6 +251,7 @@ export const StorageService = {
                 group.members.push(userId);
             }
             StorageService._save(K_GROUPS, groups);
+            if (group.storageType === 'SHEET') StorageService.syncToSheet(group);
         }
     },
 
@@ -168,6 +273,7 @@ export const StorageService = {
                 group.members.push(userId);
             }
             StorageService._save(K_GROUPS, groups);
+            if (group.storageType === 'SHEET') StorageService.syncToSheet(group);
         }
     },
 
@@ -197,6 +303,14 @@ export const StorageService = {
         };
         expenses.push(newExpense);
         StorageService._save(K_EXPENSES, expenses);
+
+        // Sync trigger
+        const groups = StorageService.getGroups();
+        const group = groups.find(g => g.id === groupId);
+        if (group && group.storageType === 'SHEET') {
+            StorageService.syncToSheet(group);
+        }
+
         return newExpense;
     },
 
@@ -206,13 +320,29 @@ export const StorageService = {
         if (index !== -1) {
             expenses[index] = updated;
             StorageService._save(K_EXPENSES, expenses);
+
+            // Sync trigger
+            const groups = StorageService.getGroups();
+            const group = groups.find(g => g.id === updated.groupId);
+            if (group && group.storageType === 'SHEET') {
+                StorageService.syncToSheet(group);
+            }
         }
     },
 
     deleteExpense: (expenseId: string) => {
         let expenses = StorageService.getExpenses();
+        const target = expenses.find(e => e.id === expenseId);
         expenses = expenses.filter(e => e.id !== expenseId);
         StorageService._save(K_EXPENSES, expenses);
+
+        if (target) {
+            const groups = StorageService.getGroups();
+            const group = groups.find(g => g.id === target.groupId);
+            if (group && group.storageType === 'SHEET') {
+                StorageService.syncToSheet(group);
+            }
+        }
     },
 
     getGroupExpenses: (groupId: string): Expense[] => {

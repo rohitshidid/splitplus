@@ -87,27 +87,6 @@ export default function DashboardPage() {
                 </Link>
             </header>
 
-            {/* Invites Section */}
-            {invites.length > 0 && (
-                <section style={{ marginBottom: "2rem" }}>
-                    <h2 style={{ fontSize: "1.25rem", marginBottom: "1rem", color: "var(--primary)" }}>Pending Invitations</h2>
-                    <div style={{ display: "grid", gap: "1rem" }}>
-                        {invites.map(g => (
-                            <div key={g.id} className="card" style={{ padding: "1rem", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                <div>
-                                    <p style={{ fontWeight: 600 }}>{g.name}</p>
-                                    <p style={{ fontSize: "0.875rem", color: "var(--muted)" }}>Invited you to join</p>
-                                </div>
-                                <div style={{ display: "flex", gap: "0.5rem" }}>
-                                    <button onClick={() => handleAccept(g.id)} className="btn btn-primary" style={{ fontSize: "0.875rem" }}>Accept</button>
-                                    <button onClick={() => handleDecline(g.id)} className="btn" style={{ fontSize: "0.875rem", background: "var(--muted-light)", color: "var(--muted)" }}>Decline</button>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                </section>
-            )}
-
             {/* Join Group Section */}
             <section style={{ marginBottom: "2rem", padding: "1.5rem", background: "var(--card-bg)", borderRadius: "var(--radius)", border: "1px solid var(--card-border)" }}>
                 <h3 style={{ fontSize: "1rem", marginBottom: "1rem" }}>Join an existing group</h3>
