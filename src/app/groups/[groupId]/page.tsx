@@ -17,8 +17,9 @@ export default function GroupPage() {
     const [expenses, setExpenses] = useState<Expense[]>([]);
     const [members, setMembers] = useState<User[]>([]);
     const [isAdding, setIsAdding] = useState(false);
+    const [editingId, setEditingId] = useState<string | null>(null);
 
-    // Add Expense Form
+    // Add/Edit Expense Form
     const [desc, setDesc] = useState("");
     const [amount, setAmount] = useState("");
     const [paidBy, setPaidBy] = useState("");
@@ -58,20 +59,16 @@ export default function GroupPage() {
             const payer = e.paidBy;
             const totalAmount = e.amount;
 
-            // Handle legacy data if any
             const splits = e.splits || [];
             const splitAmong = (e as any).splitAmong || []; // Fallback
 
-            // Credit payer
             bal[payer] = (bal[payer] || 0) + totalAmount;
 
             if (splits.length > 0) {
-                // New schema
                 splits.forEach(s => {
                     bal[s.userId] = (bal[s.userId] || 0) - s.amount;
                 });
             } else if (splitAmong.length > 0) {
-                // Legacy schema (Equal split)
                 const share = totalAmount / splitAmong.length;
                 splitAmong.forEach((uid: string) => {
                     bal[uid] = (bal[uid] || 0) - share;
@@ -90,7 +87,39 @@ export default function GroupPage() {
         return memberIds.map(id => ({ userId: id, amount: total / memberIds.length }));
     };
 
-    const handleAddExpense = (e: React.FormEvent) => {
+    const populateForm = (e: Expense) => {
+        setDesc(e.description);
+        setAmount(e.amount.toString());
+        setPaidBy(e.paidBy);
+        setSplitType(e.splitType || "EQUAL");
+        setEditingId(e.id);
+        setIsAdding(true);
+
+        // Populate split inputs if needed
+        if (e.splitType === "EXACT") {
+            const inputs: Record<string, string> = {};
+            e.splits.forEach(s => inputs[s.userId] = s.amount.toString());
+            setSplitInputs(inputs);
+        } else if (e.splitType === "PERCENTAGE") {
+            const inputs: Record<string, string> = {};
+            e.splits.forEach(s => inputs[s.userId] = ((s.amount / e.amount) * 100).toFixed(2));
+            setSplitInputs(inputs);
+        } else {
+            setSplitInputs({});
+        }
+    };
+
+    const resetForm = () => {
+        setDesc("");
+        setAmount("");
+        setIsAdding(false);
+        setEditingId(null);
+        setSplitInputs({});
+        setSplitType("EQUAL");
+        setError("");
+    };
+
+    const handleSaveExpense = (e: React.FormEvent) => {
         e.preventDefault();
         setError("");
 
@@ -134,15 +163,31 @@ export default function GroupPage() {
             }
         }
 
-        StorageService.addExpense(groupId, desc, totalVal, paidBy, finalSplits, splitType);
+        if (editingId) {
+            const existing = expenses.find(e => e.id === editingId);
+            if (existing) {
+                StorageService.updateExpense({
+                    ...existing,
+                    description: desc,
+                    amount: totalVal,
+                    paidBy,
+                    splits: finalSplits,
+                    splitType
+                });
+            }
+        } else {
+            StorageService.addExpense(groupId, desc, totalVal, paidBy, finalSplits, splitType);
+        }
 
-        // Reset
-        setDesc("");
-        setAmount("");
-        setIsAdding(false);
-        setSplitInputs({});
-        setSplitType("EQUAL");
+        resetForm();
         refreshData();
+    };
+
+    const handleDeleteExpense = (id: string) => {
+        if (confirm("Delete this expense?")) {
+            StorageService.deleteExpense(id);
+            refreshData();
+        }
     };
 
     if (loading || !group) return <div className="container p-4">Loading...</div>;
@@ -197,14 +242,18 @@ export default function GroupPage() {
             <section>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
                     <h2 style={{ fontSize: "1.25rem" }}>Expenses</h2>
-                    <button onClick={() => setIsAdding(!isAdding)} className="btn btn-primary" style={{ fontSize: "0.875rem" }}>
-                        {isAdding ? "Cancel" : "+ Add Expense"}
+                    <button onClick={() => { resetForm(); setIsAdding(!isAdding); }} className="btn btn-primary" style={{ fontSize: "0.875rem" }}>
+                        {isAdding && !editingId ? "Cancel" : "+ Add Expense"}
                     </button>
                 </div>
 
                 {isAdding && (
                     <div className="card" style={{ marginBottom: "2rem", background: "var(--muted-light)", border: "none" }}>
-                        <form onSubmit={handleAddExpense} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+                        <div style={{ marginBottom: "1rem", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <h3 style={{ fontSize: "1rem" }}>{editingId ? "Edit Expense" : "Add New Expense"}</h3>
+                            <button onClick={resetForm} style={{ border: "none", background: "none", cursor: "pointer", color: "var(--muted)" }}>✕</button>
+                        </div>
+                        <form onSubmit={handleSaveExpense} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
                             <input
                                 className="input"
                                 placeholder="Description (e.g. Dinner)"
@@ -277,7 +326,9 @@ export default function GroupPage() {
                             )}
 
                             {error && <p style={{ color: "var(--error)", fontSize: "0.875rem" }}>{error}</p>}
-                            <button type="submit" className="btn btn-primary">Save Expense</button>
+                            <button type="submit" className="btn btn-primary">
+                                {editingId ? "Update Expense" : "Save Expense"}
+                            </button>
                         </form>
                     </div>
                 )}
@@ -295,8 +346,12 @@ export default function GroupPage() {
                                         <p style={{ fontWeight: 500 }}>{e.description} <span style={{ fontSize: "0.75rem", color: "var(--muted)" }}>{typeLabel}</span></p>
                                         <p style={{ fontSize: "0.75rem", color: "var(--muted)" }}>{payerName} paid ${e.amount.toFixed(2)}</p>
                                     </div>
-                                    <div style={{ textAlign: "right" }}>
+                                    <div style={{ textAlign: "right", display: "flex", alignItems: "center", gap: "1rem" }}>
                                         <p style={{ fontSize: "0.875rem", fontWeight: 600 }}>${e.amount.toFixed(2)}</p>
+                                        <div style={{ display: "flex", gap: "0.5rem" }}>
+                                            <button onClick={() => populateForm(e)} style={{ border: "none", background: "none", cursor: "pointer", fontSize: "1.2rem" }} title="Edit">✎</button>
+                                            <button onClick={() => handleDeleteExpense(e.id)} style={{ border: "none", background: "none", cursor: "pointer", fontSize: "1.2rem", color: "var(--error)" }} title="Delete">🗑</button>
+                                        </div>
                                     </div>
                                 </div>
                             );

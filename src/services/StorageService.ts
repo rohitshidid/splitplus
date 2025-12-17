@@ -122,6 +122,21 @@ export const StorageService = {
         return newExpense;
     },
 
+    updateExpense: (updated: Expense) => {
+        const expenses = StorageService.getExpenses();
+        const index = expenses.findIndex(e => e.id === updated.id);
+        if (index !== -1) {
+            expenses[index] = updated;
+            StorageService._save(K_EXPENSES, expenses);
+        }
+    },
+
+    deleteExpense: (expenseId: string) => {
+        let expenses = StorageService.getExpenses();
+        expenses = expenses.filter(e => e.id !== expenseId);
+        StorageService._save(K_EXPENSES, expenses);
+    },
+
     getGroupExpenses: (groupId: string): Expense[] => {
         const expenses = StorageService.getExpenses();
         return expenses.filter(e => e.groupId === groupId).sort((a, b) => b.createdAt - a.createdAt);
