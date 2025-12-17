@@ -42,7 +42,12 @@ function setup() {
     let usersSheet = ss.getSheetByName("Users");
     if (!usersSheet) {
         usersSheet = ss.insertSheet("Users");
-        usersSheet.appendRow(["id", "username", "password", "createdAt"]);
+        usersSheet.appendRow(["id", "username", "password", "createdAt", "groups", "groupLinks"]);
+    } else {
+        // Migration: Ensure columns exist if sheet exists
+        const headers = usersSheet.getRange(1, 1, 1, usersSheet.getLastColumn()).getValues()[0];
+        if (!headers.includes("groups")) usersSheet.getRange(1, headers.length + 1).setValue("groups");
+        if (!headers.includes("groupLinks")) usersSheet.getRange(1, headers.length + 2).setValue("groupLinks");
     }
 }
 
@@ -51,9 +56,31 @@ function doGet(e) {
 
     if (action === "GET_ALL") {
         return getAllData();
+    } else if (action === "GET_USER_GROUPS") {
+        return getUserGroups(e.parameter.userId);
     }
 
     return ContentService.createTextOutput(JSON.stringify({ status: "error", message: "Invalid action" })).setMimeType(ContentService.MimeType.JSON);
+}
+
+function getUserGroups(userId) {
+    if (!userId) return response({ status: "error", message: "Missing userId" });
+    
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName("Users");
+    if (!sheet) return response({ status: "error", message: "Sheet missing" });
+
+    const users = getData(sheet);
+    const user = users.find(u => u.id === userId);
+    
+    if (user) {
+         return response({ 
+            status: "success", 
+            groups: user.groups ? JSON.parse(user.groups) : [],
+            groupLinks: user.groupLinks ? JSON.parse(user.groupLinks) : {}
+        });
+    }
+    return response({ status: "error", message: "User not found" });
 }
 
 function doPost(e) {
@@ -67,6 +94,8 @@ function doPost(e) {
             return registerUser(data.payload);
         } else if (action === "LOGIN") {
             return loginUser(data.payload);
+        } else if (action === "ADD_USER_GROUP") {
+            return addUserGroup(data.payload);
         }
 
         return response({ status: "error", message: "Invalid action" });
@@ -119,10 +148,6 @@ function syncGroup(payload) {
             sheet.clearContents();
             sheet.appendRow(["Key", "Value"]);
             for (const [key, val] of Object.entries(payload.meta)) {
-                // Handle array fields like pendingMembers/joinRequests by JSON stringifying if needed, 
-                // but here it's cleaner to put them in the Members tab with status.
-                // However, the payload.meta usually just has id, name, createdBy.
-                // We will handle pending/requests in Members tab via 'status'.
                 sheet.appendRow([key, val]);
             }
         }
@@ -134,11 +159,6 @@ function syncGroup(payload) {
         if (sheet) {
             sheet.clearContents();
             sheet.appendRow(["id", "username", "status"]);
-
-            // payload.members should be an array of { id, username, status }
-            // If the app sends just active members in one list, we need to adjust.
-            // But let's assume the app sends a unified list or we handle it here.
-            // For simplicity, the app will send a list of objects exactly matching columns.
             payload.members.forEach(m => {
                 sheet.appendRow([m.id, m.username, m.status || "active"]);
             });
@@ -181,7 +201,7 @@ function registerUser(user) {
         return response({ status: "error", message: "Username already exists" });
     }
 
-    sheet.appendRow([user.id, user.username, user.password, new Date().toISOString()]);
+    sheet.appendRow([user.id, user.username, user.password, new Date().toISOString(), "[]", "{}"]);
     return response({ status: "success", user: { id: user.id, username: user.username } });
 }
 
@@ -194,10 +214,58 @@ function loginUser(creds) {
     const found = users.find(u => u.username === creds.username && u.password === creds.password);
 
     if (found) {
-        return response({ status: "success", user: { id: found.id, username: found.username } });
+        return response({ 
+            status: "success", 
+            user: { id: found.id, username: found.username },
+            groups: found.groups ? JSON.parse(found.groups) : [],
+            groupLinks: found.groupLinks ? JSON.parse(found.groupLinks) : {}
+        });
     } else {
         return response({ status: "error", message: "Invalid credentials" });
     }
+}
+
+function addUserGroup(payload) {
+    const userId = payload.userId;
+    const groupId = payload.groupId;
+    const groupLink = payload.groupLink;
+
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName("Users");
+    if (!sheet) return response({ status: "error", message: "Users sheet missing" });
+
+    const data = sheet.getDataRange().getValues();
+    // Headers are row 0
+    let idCol = -1, groupsCol = -1, linksCol = -1;
+    data[0].forEach((h, i) => {
+        if (h === "id") idCol = i;
+        if (h === "groups") groupsCol = i;
+        if (h === "groupLinks") linksCol = i;
+    });
+
+    if (idCol === -1 || groupsCol === -1 || linksCol === -1) {
+        return response({ status: "error", message: "Schema mismatch (missing columns)" });
+    }
+
+    for (let i = 1; i < data.length; i++) {
+        if (data[i][idCol] === userId) {
+            let groups = [];
+            try { groups = JSON.parse(data[i][groupsCol]); } catch (e) {}
+            if (!Array.isArray(groups)) groups = [];
+
+            let links = {};
+            try { links = JSON.parse(data[i][linksCol]); } catch (e) {}
+
+            if (!groups.includes(groupId)) groups.push(groupId);
+            if (groupLink) links[groupId] = groupLink;
+
+            sheet.getRange(i + 1, groupsCol + 1).setValue(JSON.stringify(groups));
+            sheet.getRange(i + 1, linksCol + 1).setValue(JSON.stringify(links));
+            return response({ status: "success" });
+        }
+    }
+
+    return response({ status: "error", message: "User not found" });
 }
 
 // Helpers

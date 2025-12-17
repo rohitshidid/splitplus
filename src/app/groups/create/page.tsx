@@ -177,7 +177,10 @@ export default function CreateGroupPage() {
                     }}>
                         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "1rem", alignItems: "center" }}>
                             <h3 style={{ fontSize: "1.25rem", fontWeight: 600, margin: 0 }}>Google Apps Script Source</h3>
-                            <button onClick={() => setShowScript(false)} style={{ background: "none", border: "none", fontSize: "1.5rem", cursor: "pointer", color: "var(--foreground)" }}>&times;</button>
+                            <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
+                                <CopyButton text={GOOGLE_APPS_SCRIPT_SOURCE} />
+                                <button onClick={() => setShowScript(false)} style={{ background: "none", border: "none", fontSize: "1.5rem", cursor: "pointer", color: "var(--foreground)", lineHeight: 1 }}>&times;</button>
+                            </div>
                         </div>
                         <div style={{
                             background: "var(--muted-light)", padding: "1rem", borderRadius: "var(--radius)",
@@ -194,5 +197,32 @@ export default function CreateGroupPage() {
                 </div>
             )}
         </div>
+    );
+}
+
+function CopyButton({ text }: { text: string }) {
+    const [copied, setCopied] = useState(false);
+
+    const handleCopy = () => {
+        navigator.clipboard.writeText(text).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+        });
+    };
+
+    return (
+        <button
+            onClick={handleCopy}
+            className="btn"
+            style={{
+                padding: "0.25rem 0.75rem",
+                fontSize: "0.875rem",
+                background: copied ? "var(--success)" : "var(--primary)",
+                color: "white",
+                border: "none"
+            }}
+        >
+            {copied ? "Copied!" : "Copy Code"}
+        </button>
     );
 }

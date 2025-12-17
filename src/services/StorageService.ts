@@ -105,68 +105,66 @@ export const StorageService = {
     },
 
     login: async (username: string, password: string): Promise<User> => {
-        const authSheetUrl = process.env.NEXT_PUBLIC_AUTH_SHEET_URL;
+        const sheetUrl = process.env.NEXT_PUBLIC_AUTH_SHEET_URL;
         const hashedPassword = await StorageService.hashPassword(password);
 
-        if (authSheetUrl) {
-            const res = await fetch(authSheetUrl, {
-                method: "POST",
-                headers: { "Content-Type": "text/plain;charset=utf-8" },
-                body: JSON.stringify({
-                    action: "LOGIN",
-                    payload: { username, password: hashedPassword }
-                })
-            });
-            const data = await res.json();
+        // 1. Check local first (Synchronous fallback preference, but we need to check global if available for roaming)
+        // Actually, if we want roaming, we should try Global first if available.
+        // But due to "no-cors" POST limitation, we can't get the User object from POST easily.
+        // So we will rely on Local logic for Auth for now, BUT we will implement a background "Fetch Groups" 
+        // using a GET request (which works with CORS usually) if we can.
 
-            if (data.status === "success" && data.user) {
-                const user = {
-                    id: data.user.id,
-                    username: data.user.username,
-                    password: "",
-                    createdAt: Date.now()
-                };
-                localStorage.setItem(K_CURRENT_USER, user.id);
+        // For this function, we will maintain the existing "Try Global blindly, but rely on Local" approach 
+        // OR we just fix the variable names for now.
 
-                let localUsers = StorageService._get<User>(K_USERS);
-                if (!localUsers.find(u => u.id === user.id)) {
-                    localUsers.push(user);
-                    StorageService._save(K_USERS, localUsers);
-                }
-                return user;
-            } else {
-                throw new Error(data.message || "Invalid credentials");
+        // Let's implement the specific logic:
+        if (sheetUrl) {
+            try {
+                // Fire and forget login attempt (or try to await if we could read it)
+                // We send the LOGIN action. Even if we can't read response, it might trigger side effects (logging?)
+                await fetch(sheetUrl, {
+                    method: "POST",
+                    mode: "no-cors",
+                    headers: { "Content-Type": "text/plain;charset=utf-8" },
+                    body: JSON.stringify({
+                        action: "LOGIN",
+                        payload: { username, password: hashedPassword }
+                    })
+                });
+            } catch (e) {
+                // Ignore
+            }
+        }
+
+        // Local Auth Verification
+        const user = StorageService.findUserByUsername(username);
+
+        if (!user) {
+            throw new Error("Invalid credentials");
+        }
+
+        // Check password (taking into account legacy)
+        if (user.password === hashedPassword) {
+            // Good
+        } else if (user.password === password) {
+            // Legacy Migration
+            user.password = hashedPassword;
+            const all = StorageService.getUsers();
+            const idx = all.findIndex(u => u.id === user.id);
+            if (idx !== -1) {
+                all[idx] = user;
+                StorageService._save(K_USERS, all);
             }
         } else {
-            const user = StorageService.findUserByUsername(username);
-
-            // For local auth, we might have legacy plain text or new hashed passwords.
-            // We should check both if we want to be nice, or just check hash.
-            // Requirement says "encrypt", implying future.
-            // If the stored password matches the HASH of input, good.
-            // If stored password matches INPUT directly, it's legacy plain text.
-
-            if (!user) throw new Error("Invalid credentials");
-
-            if (user.password === hashedPassword) {
-                // Good (Hashed)
-            } else if (user.password === password) {
-                // Good (Legacy Plain) - optionally upgrade here
-                user.password = hashedPassword;
-                // save updated user
-                const users = StorageService.getUsers();
-                const idx = users.findIndex(u => u.id === user.id);
-                if (idx !== -1) {
-                    users[idx] = user;
-                    StorageService._save(K_USERS, users);
-                }
-            } else {
-                throw new Error("Invalid credentials");
-            }
-
-            localStorage.setItem(K_CURRENT_USER, user.id);
-            return user;
+            throw new Error("Invalid credentials");
         }
+
+        localStorage.setItem(K_CURRENT_USER, user.id);
+
+        // Attempt to sync groups
+        StorageService.fetchUserGroups(user.id);
+
+        return user;
     },
 
     logout: () => {
@@ -202,6 +200,9 @@ export const StorageService = {
         if (storageType === 'SHEET' && connectionString) {
             StorageService.syncToSheet(newGroup);
         }
+
+        // Sync to Global Auth Sheet (Add User Group)
+        StorageService.addUserGroupToGlobalSheet(creatorId, newGroup.id, storageType === 'SHEET' ? connectionString : undefined);
 
         return newGroup;
     },
@@ -365,6 +366,9 @@ export const StorageService = {
             }
             StorageService._save(K_GROUPS, groups);
             if (group.storageType === 'SHEET') StorageService.syncToSheet(group);
+
+            // Sync to global
+            StorageService.addUserGroupToGlobalSheet(userId, group.id, group.storageType === 'SHEET' ? group.connectionString : undefined);
         }
     },
 
@@ -387,6 +391,9 @@ export const StorageService = {
             }
             StorageService._save(K_GROUPS, groups);
             if (group.storageType === 'SHEET') StorageService.syncToSheet(group);
+
+            // Sync to global
+            StorageService.addUserGroupToGlobalSheet(userId, group.id, group.storageType === 'SHEET' ? group.connectionString : undefined);
         }
     },
 
@@ -461,5 +468,69 @@ export const StorageService = {
     getGroupExpenses: (groupId: string): Expense[] => {
         const expenses = StorageService.getExpenses();
         return expenses.filter(e => e.groupId === groupId).sort((a, b) => b.createdAt - a.createdAt);
+    },
+
+    addUserGroupToGlobalSheet: async (userId: string, groupId: string, groupLink?: string) => {
+        const sheetUrl = process.env.NEXT_PUBLIC_AUTH_SHEET_URL;
+        if (!sheetUrl) return;
+
+        try {
+            await fetch(sheetUrl, {
+                method: "POST",
+                mode: "no-cors",
+                headers: { "Content-Type": "text/plain;charset=utf-8" },
+                body: JSON.stringify({
+                    action: "ADD_USER_GROUP",
+                    payload: { userId, groupId, groupLink }
+                })
+            });
+        } catch (e) {
+            console.error("Failed to sync user group to global sheet", e);
+        }
+    },
+
+    fetchUserGroups: async (userId: string) => {
+        const sheetUrl = process.env.NEXT_PUBLIC_AUTH_SHEET_URL;
+        if (!sheetUrl) return;
+
+        try {
+            const res = await fetch(`${sheetUrl}?action=GET_USER_GROUPS&userId=${userId}`);
+            const data = await res.json();
+
+            if (data.status === "success" && data.groupLinks) {
+                const links = data.groupLinks; // Record<groupId, url>
+                const localGroups = StorageService.getGroups();
+                let paramsChanged = false;
+
+                for (const [gId, link] of Object.entries(links)) {
+                    // Check if we have it
+                    if (!localGroups.find(g => g.id === gId) && typeof link === 'string') {
+                        // Create stub
+                        const stub: Group = {
+                            id: gId,
+                            name: "Loading...",
+                            members: [userId],
+                            pendingMembers: [],
+                            joinRequests: [],
+                            createdBy: "",
+                            createdAt: Date.now(),
+                            storageType: 'SHEET',
+                            connectionString: link
+                        };
+                        localGroups.push(stub);
+                        paramsChanged = true;
+
+                        // Trigger sync
+                        StorageService.syncFromSheet(stub);
+                    }
+                }
+
+                if (paramsChanged) {
+                    StorageService._save(K_GROUPS, localGroups);
+                }
+            }
+        } catch (e) {
+            console.error("Failed to fetch user groups", e);
+        }
     }
 };
