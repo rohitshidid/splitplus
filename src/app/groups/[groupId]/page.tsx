@@ -80,7 +80,18 @@ export default function GroupPage() {
         if (!loading && !user) {
             router.push("/login");
         } else {
+            // First load from local wrapper
             refreshData();
+
+            // If sheet group, try to sync from remote
+            if (groupId) {
+                const g = StorageService.getGroups().find(g => g.id === groupId);
+                if (g && g.storageType === 'SHEET' && g.connectionString) {
+                    StorageService.syncFromSheet(g).then(() => {
+                        refreshData(); // Refresh after sync
+                    });
+                }
+            }
         }
     }, [user, loading, groupId, router]);
 
