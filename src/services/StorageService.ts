@@ -8,6 +8,12 @@ const K_GROUPS = "splitplus_groups";
 const K_EXPENSES = "splitplus_expenses";
 const K_CURRENT_USER = "splitplus_current_user_id";
 
+// Shown when the request never reaches the Apps Script (blocked, offline, or a
+// non-CORS error page), which the browser reports only as a generic failure.
+const UNREACHABLE_SHEET_MSG =
+    "Couldn't reach the auth sheet. Re-deploy the Apps Script web app with " +
+    "\"Execute as: Me\" and \"Who has access: Anyone\", then update NEXT_PUBLIC_AUTH_SHEET_URL.";
+
 export const StorageService = {
     // --- Helpers ---
     _get: <T>(key: string): T[] => {
@@ -58,17 +64,15 @@ export const StorageService = {
                 // A blocked/errored request never reaches the script, so the browser
                 // only reports a generic network failure ("Load failed" / "Failed to fetch").
                 console.error("Signup request to auth sheet failed", e);
-                throw new Error(
-                    "Couldn't reach the auth sheet. Re-deploy the Apps Script web app with " +
-                    "\"Execute as: Me\" and \"Who has access: Anyone\", then update NEXT_PUBLIC_AUTH_SHEET_URL."
-                );
+                throw new Error(UNREACHABLE_SHEET_MSG);
             }
 
             if (data.status === "success" && data.user) {
-                const user = {
+                const user: User = {
                     id: data.user.id,
                     username: data.user.username,
-                    password: "",
+                    // Cache the hash (never the plaintext) so login works offline too.
+                    password: hashedPassword,
                     createdAt: Date.now()
                 };
                 // Auto-login: Set session immediately
@@ -113,47 +117,67 @@ export const StorageService = {
     login: async (username: string, password: string): Promise<User> => {
         const sheetUrl = process.env.NEXT_PUBLIC_AUTH_SHEET_URL;
         const hashedPassword = await StorageService.hashPassword(password);
+        let sheetUnreachable = false;
 
-        // 1. Check local first (Synchronous fallback preference, but we need to check global if available for roaming)
-        // Actually, if we want roaming, we should try Global first if available.
-        // But due to "no-cors" POST limitation, we can't get the User object from POST easily.
-        // So we will rely on Local logic for Auth for now, BUT we will implement a background "Fetch Groups" 
-        // using a GET request (which works with CORS usually) if we can.
-
-        // For this function, we will maintain the existing "Try Global blindly, but rely on Local" approach 
-        // OR we just fix the variable names for now.
-
-        // Let's implement the specific logic:
+        // The sheet is the source of truth when configured: it is the only store that
+        // knows about accounts created in another browser or on another device.
         if (sheetUrl) {
+            let data: any = null;
             try {
-                // Fire and forget login attempt (or try to await if we could read it)
-                // We send the LOGIN action. Even if we can't read response, it might trigger side effects (logging?)
-                await fetch(sheetUrl, {
+                const res = await fetch(sheetUrl, {
                     method: "POST",
-                    mode: "no-cors",
                     headers: { "Content-Type": "text/plain;charset=utf-8" },
                     body: JSON.stringify({
                         action: "LOGIN",
                         payload: { username, password: hashedPassword }
                     })
                 });
+                data = await res.json();
             } catch (e) {
-                // Ignore
+                // Fall through to local verification so a network blip doesn't lock
+                // out an account this browser already knows about.
+                console.error("Login request to auth sheet failed", e);
+                sheetUnreachable = true;
+            }
+
+            if (data) {
+                if (data.status !== "success" || !data.user) {
+                    throw new Error(data.message || "Invalid credentials");
+                }
+
+                const user: User = {
+                    id: data.user.id,
+                    username: data.user.username,
+                    password: hashedPassword,
+                    createdAt: Date.now()
+                };
+
+                // Cache locally so the synchronous lookups elsewhere resolve this user.
+                const localUsers = StorageService._get<User>(K_USERS);
+                const idx = localUsers.findIndex(u => u.id === user.id);
+                if (idx === -1) {
+                    localUsers.push(user);
+                } else {
+                    localUsers[idx] = { ...localUsers[idx], ...user };
+                }
+                StorageService._save(K_USERS, localUsers);
+
+                localStorage.setItem(K_CURRENT_USER, user.id);
+                StorageService.fetchUserGroups(user.id);
+
+                return user;
             }
         }
 
-        // Local Auth Verification
+        // Local verification: no sheet configured, or the sheet was unreachable.
         const user = StorageService.findUserByUsername(username);
 
-        if (!user) {
-            throw new Error("Invalid credentials");
+        if (!user || (user.password !== hashedPassword && user.password !== password)) {
+            throw new Error(sheetUnreachable ? UNREACHABLE_SHEET_MSG : "Invalid credentials");
         }
 
-        // Check password (taking into account legacy)
-        if (user.password === hashedPassword) {
-            // Good
-        } else if (user.password === password) {
-            // Legacy Migration
+        if (user.password === password) {
+            // Legacy migration: plaintext on record, replace it with the hash.
             user.password = hashedPassword;
             const all = StorageService.getUsers();
             const idx = all.findIndex(u => u.id === user.id);
@@ -161,8 +185,6 @@ export const StorageService = {
                 all[idx] = user;
                 StorageService._save(K_USERS, all);
             }
-        } else {
-            throw new Error("Invalid credentials");
         }
 
         localStorage.setItem(K_CURRENT_USER, user.id);
