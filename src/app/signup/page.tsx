@@ -24,12 +24,22 @@ export default function SignupPage() {
     };
 
     return (
+        <div className="landing">
+            <nav className="lnav stuck">
+                <div className="container container-wide lnav-in">
+                    <Link href="/" className="brand">
+                        <span className="brand-mark">S</span>
+                        Splitplus
+                    </Link>
+                    <div className="lnav-links">
+                        <Link href="/">What is Splitplus?</Link>
+                        <Link href="/login" className="btn btn-primary btn-sm">Log in</Link>
+                    </div>
+                </div>
+            </nav>
+
         <main className="auth-shell">
             <div className="auth-card">
-                <Link href="/" className="brand" style={{ justifyContent: "center", marginBottom: 22 }}>
-                    <span className="brand-mark">S</span>
-                    Splitplus
-                </Link>
 
                 <div className="card">
                     <h2 style={{ fontSize: "1.4rem", textAlign: "center" }}>Create your account</h2>
@@ -80,5 +90,6 @@ export default function SignupPage() {
                 </p>
             </div>
         </main>
+        </div>
     );
 }

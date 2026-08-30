@@ -7,6 +7,7 @@ import { Group, Expense, ExpenseSplit, User, SplitType } from "@/types";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import AppBar from "@/components/AppBar";
+import { computeBalances, equalSplit, outstandingTotal, settleableShares } from "@/lib/balances";
 
 const POLL_MS = 20_000;
 const money = (n: number) => `$${Math.abs(n).toFixed(2)}`;
@@ -86,45 +87,11 @@ function GroupView() {
         return () => clearInterval(id);
     }, [userId, user, loading, router, refreshData]);
 
-    // Compute balances: what each member is up (paid more than their share) or down.
-    //
-    // Walked share by share rather than "payer gets the whole total back", because a
-    // settled share has to leave both sides at once - the debtor stops owing it and
-    // the payer stops being owed it. Anything else would leave the books unbalanced.
-    const balances = useMemo(() => {
-        const bal: Record<string, number> = {};
-        members.forEach(m => { bal[m.id] = 0; });
-
-        expenses.forEach(e => {
-            (e.splits || []).forEach(s => {
-                if (s.settled) return;          // squared up: neither side is exposed
-                if (s.userId === e.paidBy) return; // nobody owes themselves
-                bal[e.paidBy] = (bal[e.paidBy] || 0) + s.amount;
-                bal[s.userId] = (bal[s.userId] || 0) - s.amount;
-            });
-        });
-
-        return bal;
-    }, [expenses, members]);
-
-    const totalTracked = useMemo(
-        () => expenses.reduce((sum, e) => sum + e.amount, 0),
-        [expenses]
-    );
-
-    /** Shares that can be settled at all - the payer's own share is never a debt. */
-    const owedShares = useCallback(
-        (e: Expense) => (e.splits || []).filter(s => s.userId !== e.paidBy),
-        []
-    );
-
-    const outstanding = useMemo(
-        () => expenses.reduce(
-            (sum, e) => sum + owedShares(e).filter(s => !s.settled).reduce((n, s) => n + s.amount, 0),
-            0
-        ),
-        [expenses, owedShares]
-    );
+    const memberIds = useMemo(() => members.map(m => m.id), [members]);
+    const balances = useMemo(() => computeBalances(expenses, memberIds), [expenses, memberIds]);
+    const totalTracked = useMemo(() => expenses.reduce((sum, e) => sum + e.amount, 0), [expenses]);
+    const outstanding = useMemo(() => outstandingTotal(expenses), [expenses]);
+    const owedShares = useCallback((e: Expense) => settleableShares(e), []);
 
     const handleInvite = async () => {
         const wanted = inviteName.trim();
@@ -222,15 +189,7 @@ function GroupView() {
         let splits: ExpenseSplit[] = [];
 
         if (splitType === "EQUAL") {
-            // Distribute cents so the shares always add back up to the total exactly.
-            const cents = Math.round(total * 100);
-            const base = Math.floor(cents / members.length);
-            let remainder = cents - base * members.length;
-            splits = members.map(m => {
-                const extra = remainder > 0 ? 1 : 0;
-                remainder -= extra;
-                return { userId: m.id, amount: (base + extra) / 100 };
-            });
+            splits = equalSplit(total, memberIds);
         } else if (splitType === "EXACT") {
             let sum = 0;
             splits = members.map(m => {
