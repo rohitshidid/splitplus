@@ -33,6 +33,8 @@ function GroupView() {
     const [requests, setRequests] = useState<User[]>([]);
     const [inviteName, setInviteName] = useState("");
     const [inviteMsg, setInviteMsg] = useState("");
+    const [inviting, setInviting] = useState(false);
+    const [pending, setPending] = useState<User[]>([]);
 
     const refreshData = () => {
         if (!groupId) return;
@@ -47,35 +49,55 @@ function GroupView() {
         const allUsers = StorageService.getUsers();
         setMembers(allUsers.filter(u => g.members.includes(u.id)));
         setRequests(allUsers.filter(u => g.joinRequests?.includes(u.id)));
+        setPending(allUsers.filter(u => g.pendingMembers?.includes(u.id)));
     };
 
-    const handleApprove = (userId: string) => {
+    const handleApprove = async (userId: string) => {
         if (!groupId) return;
-        StorageService.approveJoinRequest(groupId, userId);
+        await StorageService.approveJoinRequest(groupId, userId);
         refreshData();
     };
 
-    const handleReject = (userId: string) => {
+    const handleReject = async (userId: string) => {
         if (!groupId) return;
-        StorageService.rejectJoinRequest(groupId, userId);
+        await StorageService.rejectJoinRequest(groupId, userId);
         refreshData();
     };
 
-    const handleInvite = () => {
-        if (!inviteName.trim() || !groupId) return;
-        const userToInvite = StorageService.findUserByUsername(inviteName);
-        if (!userToInvite) {
-            setInviteMsg("User not found.");
-            return;
-        }
-        if (members.some(m => m.id === userToInvite.id)) {
-            setInviteMsg("Already a member.");
+    const handleInvite = async () => {
+        if (!inviteName.trim() || !groupId || !group) return;
+
+        if (group.storageType !== "SHEET" || !group.connectionString) {
+            // A LOCAL group never leaves this browser, so an invite could not reach anyone.
+            setInviteMsg("This group isn't backed by a Google Sheet, so invites can't be delivered to other devices.");
             return;
         }
 
-        StorageService.inviteMember(groupId, userToInvite.id);
-        setInviteMsg("Invite sent!");
-        setInviteName("");
+        setInviting(true);
+        setInviteMsg("");
+        try {
+            // Remote lookup: the invitee almost always signed up on their own device.
+            const userToInvite = await StorageService.findUserByUsernameRemote(inviteName.trim());
+            if (!userToInvite) {
+                setInviteMsg("User not found.");
+                return;
+            }
+            if (members.some(m => m.id === userToInvite.id)) {
+                setInviteMsg("Already a member.");
+                return;
+            }
+            if (group.pendingMembers?.includes(userToInvite.id)) {
+                setInviteMsg("Invite already sent.");
+                return;
+            }
+
+            await StorageService.inviteMember(groupId, userToInvite.id);
+            setInviteMsg("Invite sent!");
+            setInviteName("");
+            refreshData();
+        } finally {
+            setInviting(false);
+        }
     };
 
     useEffect(() => {
@@ -313,9 +335,16 @@ function GroupView() {
                         onChange={e => setInviteName(e.target.value)}
                         style={{ maxWidth: "200px" }}
                     />
-                    <button onClick={handleInvite} className="btn" style={{ background: "var(--muted-light)" }}>Invite</button>
+                    <button onClick={handleInvite} className="btn" style={{ background: "var(--muted-light)" }} disabled={inviting}>
+                        {inviting ? "Inviting..." : "Invite"}
+                    </button>
                     {inviteMsg && <span style={{ fontSize: "0.875rem", color: inviteMsg.includes("sent") ? "var(--success)" : "var(--error)" }}>{inviteMsg}</span>}
                 </div>
+                {pending.length > 0 && (
+                    <p style={{ marginTop: "0.75rem", fontSize: "0.8125rem", color: "var(--muted)" }}>
+                        Awaiting acceptance: {pending.map(u => u.username).join(", ")}
+                    </p>
+                )}
             </section>
 
             {/* Balances Section */}

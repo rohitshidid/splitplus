@@ -98,6 +98,8 @@ function doPost(e) {
             return addUserGroup(data.payload);
         } else if (action === "DELETE_ACCOUNT") {
             return deleteAccount(data.payload);
+        } else if (action === "FIND_USER") {
+            return findUser(data.payload);
         }
 
         return response({ status: "error", message: "Invalid action" });
@@ -225,6 +227,25 @@ function loginUser(creds) {
     } else {
         return response({ status: "error", message: "Invalid credentials" });
     }
+}
+
+/**
+ * Resolves a username to an id so one device can invite an account it has
+ * never seen. Returns only public fields - never the password hash.
+ */
+function findUser(payload) {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName("Users");
+    if (!sheet) return response({ status: "error", message: "Users sheet missing" });
+
+    const wanted = String(payload.username || "").trim().toLowerCase();
+    if (!wanted) return response({ status: "error", message: "Missing username" });
+
+    const users = getData(sheet);
+    const found = users.find(u => String(u.username).toLowerCase() === wanted);
+
+    if (!found) return response({ status: "error", message: "User not found" });
+    return response({ status: "success", user: { id: found.id, username: found.username } });
 }
 
 function deleteAccount(creds) {

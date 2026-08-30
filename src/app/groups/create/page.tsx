@@ -17,6 +17,8 @@ export default function CreateGroupPage() {
     const [addedMembers, setAddedMembers] = useState<User[]>([]); // To display names
     const [memberIds, setMemberIds] = useState<string[]>([]);
     const [error, setError] = useState("");
+    const [lookingUp, setLookingUp] = useState(false);
+    const [creating, setCreating] = useState(false);
 
     const [showScript, setShowScript] = useState(false);
 
@@ -24,7 +26,7 @@ export default function CreateGroupPage() {
         if (!loading && !user) router.push("/login");
     }, [user, loading, router]);
 
-    const addMember = (e: React.FormEvent) => {
+    const addMember = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!memberUsername) return;
 
@@ -33,21 +35,27 @@ export default function CreateGroupPage() {
             return;
         }
 
-        const foundUser = StorageService.findUserByUsername(memberUsername);
-        if (!foundUser) {
-            setError("User not found.");
-            return;
-        }
-
-        if (memberIds.includes(foundUser.id)) {
-            setError("User already added.");
-            return;
-        }
-
-        setAddedMembers([...addedMembers, foundUser]);
-        setMemberIds([...memberIds, foundUser.id]);
-        setMemberUsername("");
+        setLookingUp(true);
         setError("");
+        try {
+            // Remote lookup: members usually signed up on their own device.
+            const foundUser = await StorageService.findUserByUsernameRemote(memberUsername.trim());
+            if (!foundUser) {
+                setError("User not found.");
+                return;
+            }
+
+            if (memberIds.includes(foundUser.id)) {
+                setError("User already added.");
+                return;
+            }
+
+            setAddedMembers([...addedMembers, foundUser]);
+            setMemberIds([...memberIds, foundUser.id]);
+            setMemberUsername("");
+        } finally {
+            setLookingUp(false);
+        }
     };
 
     const removeMember = (id: string) => {
@@ -58,7 +66,7 @@ export default function CreateGroupPage() {
     const [useSheet, setUseSheet] = useState(false);
     const [sheetUrl, setSheetUrl] = useState("");
 
-    const handleCreate = () => {
+    const handleCreate = async () => {
         if (!user) return;
         if (!name.trim()) {
             setError("Group name is required.");
@@ -68,12 +76,22 @@ export default function CreateGroupPage() {
             setError("Please enter a valid Google Apps Script Web App URL.");
             return;
         }
+        if (!useSheet && memberIds.length > 0) {
+            setError("Members can only be invited on a Google Sheet backed group - a local group never leaves this browser.");
+            return;
+        }
 
+        setCreating(true);
+        setError("");
         try {
             const newGroup = StorageService.createGroup(name, memberIds, user.id, useSheet ? 'SHEET' : 'LOCAL', sheetUrl);
+            // Awaited so the invitees' rows are written before we navigate away and
+            // the page unmounts the in-flight requests.
+            await StorageService.publishNewGroup(newGroup);
             router.push(`/groups/view?id=${newGroup.id}`);
         } catch (err) {
             setError("Failed to create group.");
+            setCreating(false);
         }
     };
 
@@ -143,7 +161,9 @@ export default function CreateGroupPage() {
                             onChange={(e) => setMemberUsername(e.target.value)}
                             placeholder="Username"
                         />
-                        <button onClick={addMember} className="btn" style={{ background: "var(--muted-light)" }}>Add</button>
+                        <button onClick={addMember} className="btn" style={{ background: "var(--muted-light)" }} disabled={lookingUp}>
+                            {lookingUp ? "..." : "Add"}
+                        </button>
                     </div>
                     {error && <p style={{ color: "var(--error)", fontSize: "0.875rem", marginTop: "0.5rem" }}>{error}</p>}
                 </div>
@@ -162,7 +182,9 @@ export default function CreateGroupPage() {
                     </div>
                 )}
 
-                <button onClick={handleCreate} className="btn btn-primary" style={{ width: "100%" }}>Create Group</button>
+                <button onClick={handleCreate} className="btn btn-primary" style={{ width: "100%" }} disabled={creating}>
+                    {creating ? "Creating..." : "Create Group"}
+                </button>
             </div>
 
             {showScript && (
