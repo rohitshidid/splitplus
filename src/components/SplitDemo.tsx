@@ -3,7 +3,6 @@
 import { useMemo, useState } from "react";
 import { Expense, ExpenseSplit, SplitType } from "@/types";
 import { computeBalances, equalSplit, outstandingTotal, settleableShares } from "@/lib/balances";
-import BrandIcon from "@/components/BrandIcon";
 
 /**
  * A working Splitplus group, running in the page.
@@ -131,7 +130,6 @@ export default function SplitDemo() {
         <div className="win demo">
             <div className="win-bar">
                 <i /><i /><i />
-                <BrandIcon size={14} style={{ marginLeft: 10, borderRadius: 4 }} />
                 <span className="win-title">Splitplus — Lisbon, four of us</span>
                 {touched && (
                     <button
