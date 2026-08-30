@@ -19,10 +19,12 @@ export const metadata: Metadata = {
     "Track shared expenses with friends, flatmates or a trip. Equal, exact or percentage splits, and the same numbers on every device.",
   icons: {
     icon: [
+      { url: "/favicon.ico" },
       { url: "/icon.svg", type: "image/svg+xml" },
+      { url: "/icon.png", type: "image/png", sizes: "512x512" },
     ],
-    shortcut: "/icon.svg",
-    apple: "/icon.svg",
+    shortcut: "/favicon.ico",
+    apple: "/apple-icon.png",
   },
 };
 
