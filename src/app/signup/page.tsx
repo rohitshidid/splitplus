@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import Link from "next/link";
+import BrandIcon from "@/components/BrandIcon";
 
 export default function SignupPage() {
     const { signup } = useAuth();
@@ -27,8 +28,8 @@ export default function SignupPage() {
         <div className="landing">
             <nav className="lnav stuck">
                 <div className="container container-wide lnav-in">
-                    <Link href="/" className="brand">
-                        <span className="brand-mark">S</span>
+                    <Link href="/" className="brand" style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+                        <BrandIcon size={30} />
                         Splitplus
                     </Link>
                     <div className="lnav-links">
@@ -42,6 +43,9 @@ export default function SignupPage() {
             <div className="auth-card">
 
                 <div className="card">
+                    <div style={{ display: "flex", justifyContent: "center", marginBottom: 16 }}>
+                        <BrandIcon size={48} />
+                    </div>
                     <h2 style={{ fontSize: "1.4rem", textAlign: "center" }}>Create your account</h2>
                     <p className="muted" style={{ textAlign: "center", fontSize: ".9rem", marginTop: 6, marginBottom: 22 }}>
                         A username and a password. That&apos;s the whole form.

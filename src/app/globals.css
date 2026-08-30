@@ -136,10 +136,13 @@ code, .mono { font-family: var(--mono); }
 .brand { display: flex; align-items: center; gap: 9px; font-weight: 650; letter-spacing: -0.02em; color: var(--ink); }
 .brand:hover { text-decoration: none; }
 .brand-mark {
-  width: 26px; height: 26px; border-radius: 8px;
-  background: linear-gradient(150deg, var(--accent), var(--accent-deep));
-  color: #fff; display: grid; place-items: center;
-  font-size: 14px; font-weight: 700; letter-spacing: -0.03em;
+  width: 28px; height: 28px; border-radius: 8px;
+  background: linear-gradient(145deg, #10b981, #059669);
+  color: #fff; display: inline-flex; align-items: center; justify-content: center;
+  font-size: 15px; line-height: 1;
+  box-shadow: 0 2px 6px rgba(5, 150, 105, 0.25);
+  user-select: none;
+  flex-shrink: 0;
 }
 
 /* --------------------------------------------------------------- buttons */
@@ -389,12 +392,30 @@ code, .mono { font-family: var(--mono); }
   pointer-events: none;
 }
 .hero > * { position: relative; z-index: 1; }
+.hero-icon-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto;
+  filter: drop-shadow(0 12px 28px rgba(2, 132, 199, 0.22));
+  transition: transform .35s cubic-bezier(.22,.61,.36,1), filter .35s ease;
+  user-select: none;
+}
+.hero-icon-wrap:hover {
+  transform: translateY(-4px) scale(1.06) rotate(3deg);
+  filter: drop-shadow(0 18px 36px rgba(2, 132, 199, 0.32));
+}
 .hero-mark {
-  width: 84px; height: 84px; border-radius: 22px; margin: 0 auto;
-  background: linear-gradient(150deg, var(--accent), var(--accent-deep));
-  color: #fff; display: grid; place-items: center;
-  font-size: 2.4rem; font-weight: 700; letter-spacing: -0.04em;
-  box-shadow: var(--shadow-lg);
+  width: 90px; height: 90px; border-radius: 24px; margin: 0 auto;
+  background: linear-gradient(145deg, #34d399 0%, #059669 60%, #047857 100%);
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 10px 28px rgba(5, 150, 105, 0.28), 0 3px 8px rgba(5, 150, 105, 0.16);
+  user-select: none;
+  transition: transform .3s cubic-bezier(.22,.61,.36,1), box-shadow .3s ease;
+}
+.hero-mark:hover {
+  transform: translateY(-2px) scale(1.05) rotate(4deg);
+  box-shadow: 0 16px 36px rgba(5, 150, 105, 0.36), 0 5px 12px rgba(5, 150, 105, 0.2);
 }
 .hero h1 { margin: 24px auto 0; max-width: 15ch; }
 .hero .lede { margin: 20px auto 0; max-width: 52ch; }

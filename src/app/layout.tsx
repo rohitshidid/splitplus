@@ -17,6 +17,9 @@ export const metadata: Metadata = {
   title: "Splitplus — nobody remembers who paid for dinner",
   description:
     "Track shared expenses with friends, flatmates or a trip. Equal, exact or percentage splits, and the same numbers on every device.",
+  icons: {
+    icon: "/icon.svg",
+  },
 };
 
 export default function RootLayout({

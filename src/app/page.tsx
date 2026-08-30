@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect } from "react";
 import SplitDemo from "@/components/SplitDemo";
+import BrandIcon from "@/components/BrandIcon";
 
 const S = (i: number) => ({ "--i": i } as React.CSSProperties);
 
@@ -37,8 +38,10 @@ export default function Home() {
     <div className="landing">
       <nav className="lnav">
         <div className="container container-wide lnav-in">
-          <span className="brand-mark">S</span>
-          <span style={{ fontWeight: 600, fontSize: 15, letterSpacing: "-0.015em" }}>Splitplus</span>
+          <Link href="/" className="brand" style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+            <BrandIcon size={30} />
+            <span style={{ fontWeight: 650, fontSize: 16, letterSpacing: "-0.015em", color: "var(--ink)" }}>Splitplus</span>
+          </Link>
           <div className="lnav-links">
             <a className="opt" href="#what">What it is</a>
             <a className="opt" href="#features">Features</a>
@@ -52,7 +55,9 @@ export default function Home() {
       {/* ------------------------------------------------------------- hero */}
       <header className="hero">
         <div className="container container-wide">
-          <div className="hero-mark reveal" style={S(0)}>S</div>
+          <div className="hero-icon-wrap reveal" style={S(0)}>
+            <BrandIcon size={108} />
+          </div>
           <h1 className="reveal" style={S(1)}>Split the bill. Keep the friendship.</h1>
           <p className="lede reveal" style={S(2)}>
             Splitplus is a <strong>shared expense tracker</strong> for a trip, a flat, or a group of
@@ -362,7 +367,7 @@ export default function Home() {
 
       <footer className="lfoot">
         <div className="container container-wide lfoot-in">
-          <span className="brand-mark" style={{ width: 22, height: 22, fontSize: 12 }}>S</span>
+          <BrandIcon size={24} />
           <span>Splitplus — free, and yours to host</span>
           <span className="sp">
             <Link href="/login">Log in</Link>
