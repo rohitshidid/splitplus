@@ -43,8 +43,8 @@ export const StorageService = {
 
         if (authSheetUrl) {
             // Global Auth
+            let data: any;
             try {
-                // Try catch wrapper for the fetch itself though we handle logic below
                 const res = await fetch(authSheetUrl, {
                     method: "POST",
                     headers: { "Content-Type": "text/plain;charset=utf-8" },
@@ -53,31 +53,37 @@ export const StorageService = {
                         payload: { id: crypto.randomUUID(), username, password: hashedPassword }
                     })
                 });
-                const data = await res.json();
-                if (data.status === "success" && data.user) {
-                    const user = {
-                        id: data.user.id,
-                        username: data.user.username,
-                        password: "",
-                        createdAt: Date.now()
-                    };
-                    // Auto-login: Set session immediately
-                    localStorage.setItem(K_CURRENT_USER, user.id);
-
-                    // Cache user locally if needed for synchronous lookups
-                    let localUsers = StorageService._get<User>(K_USERS);
-                    if (!localUsers.find(u => u.id === user.id)) {
-                        localUsers.push(user);
-                        StorageService._save(K_USERS, localUsers);
-                    }
-
-                    return user;
-                } else {
-                    throw new Error(data.message || "Signup failed");
-                }
+                data = await res.json();
             } catch (e: any) {
-                console.error("Signup error", e);
-                throw new Error(e.message || "Signup failed");
+                // A blocked/errored request never reaches the script, so the browser
+                // only reports a generic network failure ("Load failed" / "Failed to fetch").
+                console.error("Signup request to auth sheet failed", e);
+                throw new Error(
+                    "Couldn't reach the auth sheet. Re-deploy the Apps Script web app with " +
+                    "\"Execute as: Me\" and \"Who has access: Anyone\", then update NEXT_PUBLIC_AUTH_SHEET_URL."
+                );
+            }
+
+            if (data.status === "success" && data.user) {
+                const user = {
+                    id: data.user.id,
+                    username: data.user.username,
+                    password: "",
+                    createdAt: Date.now()
+                };
+                // Auto-login: Set session immediately
+                localStorage.setItem(K_CURRENT_USER, user.id);
+
+                // Cache user locally if needed for synchronous lookups
+                let localUsers = StorageService._get<User>(K_USERS);
+                if (!localUsers.find(u => u.id === user.id)) {
+                    localUsers.push(user);
+                    StorageService._save(K_USERS, localUsers);
+                }
+
+                return user;
+            } else {
+                throw new Error(data.message || "Signup failed");
             }
 
         } else {
