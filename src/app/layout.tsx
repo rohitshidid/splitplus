@@ -14,8 +14,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Splitplus",
-  description: "Track and split payments with friends.",
+  title: "Splitplus — nobody remembers who paid for dinner",
+  description:
+    "Track shared expenses with friends, flatmates or a trip. Equal, exact or percentage splits, and the same numbers on every device.",
 };
 
 export default function RootLayout({

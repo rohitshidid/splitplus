@@ -1,48 +1,53 @@
 "use client";
 
-import { useEffect, useState, useMemo, Suspense } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, Suspense } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { StorageService } from "@/services/StorageService";
-import { Group, Expense, User } from "@/types";
+import { Group, Expense, User, SplitType } from "@/types";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
+import AppBar from "@/components/AppBar";
+
+const POLL_MS = 20_000;
+const money = (n: number) => `$${Math.abs(n).toFixed(2)}`;
 
 function GroupView() {
     const { user, loading } = useAuth();
     const router = useRouter();
-    const searchParams = useSearchParams();
-    const groupId = searchParams.get("id");
+    const groupId = useSearchParams().get("id");
 
     const [group, setGroup] = useState<Group | null>(null);
     const [expenses, setExpenses] = useState<Expense[]>([]);
     const [members, setMembers] = useState<User[]>([]);
+    const [requests, setRequests] = useState<User[]>([]);
+    const [pending, setPending] = useState<User[]>([]);
+    const [notFound, setNotFound] = useState(false);
+
     const [isAdding, setIsAdding] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
-
-    // Add/Edit Expense Form
     const [desc, setDesc] = useState("");
     const [amount, setAmount] = useState("");
     const [paidBy, setPaidBy] = useState("");
-
-    // Split Logic
-    const [splitType, setSplitType] = useState<"EQUAL" | "EXACT" | "PERCENTAGE">("EQUAL");
-    const [splitInputs, setSplitInputs] = useState<Record<string, string>>({}); // userID -> value (amount or %)
-
+    const [splitType, setSplitType] = useState<SplitType>("EQUAL");
+    const [splitInputs, setSplitInputs] = useState<Record<string, string>>({});
     const [error, setError] = useState("");
+    const [saving, setSaving] = useState(false);
 
-    const [requests, setRequests] = useState<User[]>([]);
     const [inviteName, setInviteName] = useState("");
-    const [inviteMsg, setInviteMsg] = useState("");
+    const [inviteMsg, setInviteMsg] = useState<{ ok: boolean; text: string } | null>(null);
     const [inviting, setInviting] = useState(false);
-    const [pending, setPending] = useState<User[]>([]);
+    const [copied, setCopied] = useState(false);
 
-    const refreshData = () => {
+    const userId = user?.id;
+
+    const refreshData = useCallback(() => {
         if (!groupId) return;
-        const g = StorageService.getGroups().find(g => g.id === groupId);
+        const g = StorageService.getGroup(groupId);
         if (!g) {
-            router.push("/dashboard");
+            setNotFound(true);
             return;
         }
+        setNotFound(false);
         setGroup(g);
         setExpenses(StorageService.getGroupExpenses(groupId));
 
@@ -50,49 +55,83 @@ function GroupView() {
         setMembers(allUsers.filter(u => g.members.includes(u.id)));
         setRequests(allUsers.filter(u => g.joinRequests?.includes(u.id)));
         setPending(allUsers.filter(u => g.pendingMembers?.includes(u.id)));
-    };
+    }, [groupId]);
 
-    const handleApprove = async (userId: string) => {
-        if (!groupId) return;
-        await StorageService.approveJoinRequest(groupId, userId);
-        refreshData();
-    };
+    const syncRef = useRef<() => Promise<void>>(async () => {});
+    useEffect(() => {
+        syncRef.current = async () => {
+            if (!userId) return;
+            await StorageService.syncAll(userId);
+            refreshData();
+        };
+    });
 
-    const handleReject = async (userId: string) => {
-        if (!groupId) return;
-        await StorageService.rejectJoinRequest(groupId, userId);
-        refreshData();
-    };
-
-    const handleInvite = async () => {
-        if (!inviteName.trim() || !groupId || !group) return;
-
-        if (group.storageType !== "SHEET" || !group.connectionString) {
-            // A LOCAL group never leaves this browser, so an invite could not reach anyone.
-            setInviteMsg("This group isn't backed by a Google Sheet, so invites can't be delivered to other devices.");
+    useEffect(() => {
+        if (!loading && !user) {
+            router.push("/login");
             return;
         }
+        if (!userId) return;
+
+        refreshData();
+        syncRef.current();
+
+        // Expenses and approvals land from other people's devices; keep asking.
+        const id = setInterval(() => {
+            if (document.visibilityState === "visible") syncRef.current();
+        }, POLL_MS);
+        return () => clearInterval(id);
+    }, [userId, user, loading, router, refreshData]);
+
+    // Compute balances: what each member is up (paid more than their share) or down.
+    const balances = useMemo(() => {
+        const bal: Record<string, number> = {};
+        members.forEach(m => { bal[m.id] = 0; });
+
+        expenses.forEach(e => {
+            bal[e.paidBy] = (bal[e.paidBy] || 0) + e.amount;
+            (e.splits || []).forEach(s => {
+                bal[s.userId] = (bal[s.userId] || 0) - s.amount;
+            });
+        });
+
+        return bal;
+    }, [expenses, members]);
+
+    const totalTracked = useMemo(
+        () => expenses.reduce((sum, e) => sum + e.amount, 0),
+        [expenses]
+    );
+
+    const handleInvite = async () => {
+        const wanted = inviteName.trim();
+        if (!wanted || !groupId || !group) return;
 
         setInviting(true);
-        setInviteMsg("");
+        setInviteMsg(null);
         try {
             // Remote lookup: the invitee almost always signed up on their own device.
-            const userToInvite = await StorageService.findUserByUsernameRemote(inviteName.trim());
-            if (!userToInvite) {
-                setInviteMsg("User not found.");
+            const target = await StorageService.findUserByUsernameRemote(wanted);
+            if (!target) {
+                setInviteMsg({ ok: false, text: `No account called "${wanted}".` });
                 return;
             }
-            if (members.some(m => m.id === userToInvite.id)) {
-                setInviteMsg("Already a member.");
+            if (group.members.includes(target.id)) {
+                setInviteMsg({ ok: false, text: "They're already a member." });
                 return;
             }
-            if (group.pendingMembers?.includes(userToInvite.id)) {
-                setInviteMsg("Invite already sent.");
+            if (group.pendingMembers?.includes(target.id)) {
+                setInviteMsg({ ok: false, text: "They already have an invite waiting." });
                 return;
             }
 
-            await StorageService.inviteMember(groupId, userToInvite.id);
-            setInviteMsg("Invite sent!");
+            const ok = await StorageService.inviteMember(groupId, target.id);
+            if (!ok) {
+                setInviteMsg({ ok: false, text: "Couldn't send the invite. Check your connection." });
+                return;
+            }
+
+            setInviteMsg({ ok: true, text: `Invite sent to ${target.username}.` });
             setInviteName("");
             refreshData();
         } finally {
@@ -100,66 +139,27 @@ function GroupView() {
         }
     };
 
-    useEffect(() => {
-        if (!loading && !user) {
-            router.push("/login");
-        } else {
-            // First load from local wrapper
-            refreshData();
-
-            // If sheet group, try to sync from remote
-            if (groupId) {
-                const g = StorageService.getGroups().find(g => g.id === groupId);
-                if (g && g.storageType === 'SHEET' && g.connectionString) {
-                    StorageService.syncFromSheet(g).then(() => {
-                        refreshData(); // Refresh after sync
-                    });
-                }
-            }
-        }
-    }, [user, loading, groupId, router]);
-
-    // Compute Balances
-    const balances = useMemo(() => {
-        const bal: Record<string, number> = {};
-        members.forEach(m => bal[m.id] = 0);
-
-        expenses.forEach(e => {
-            const payer = e.paidBy;
-            const totalAmount = e.amount;
-
-            const splits = e.splits || [];
-
-            // Fix: remove implicit 'any' by typing or using optional chaining carefully
-            // In Expense type, splitAmong is removed, so we ignore legacy backup for now or fix type if strictly needed.
-            // Assuming legacy data might have it, but Expense type definition removed it. 
-            // We'll stick to new schema strictly to avoid TS errors.
-
-            bal[payer] = (bal[payer] || 0) + totalAmount;
-
-            if (splits.length > 0) {
-                splits.forEach(s => {
-                    bal[s.userId] = (bal[s.userId] || 0) - s.amount;
-                });
-            } else {
-                // Determine implicit equal split if splits array is empty but we have members
-                // (Old behavior usually had 'splitAmong', new behavior insists on 'splits' array for Equal too?)
-                // Actually addExpense generates splits for Equal. Legacy might not.
-                // If legacy expense has no splits, we assume Equal among all current group members at *transaction time*?
-                // Or simply ignore/handle gracefully. 
-                // Let's assume valid data for now.
-            }
-        });
-
-        return bal;
-    }, [expenses, members]);
-
-    const handleSplitInputChange = (userId: string, val: string) => {
-        setSplitInputs(prev => ({ ...prev, [userId]: val }));
+    const handleApprove = async (id: string) => {
+        if (!groupId) return;
+        await StorageService.approveJoinRequest(groupId, id);
+        refreshData();
     };
 
-    const distributeEqual = (total: number, memberIds: string[]) => {
-        return memberIds.map(id => ({ userId: id, amount: total / memberIds.length }));
+    const handleReject = async (id: string) => {
+        if (!groupId) return;
+        await StorageService.rejectJoinRequest(groupId, id);
+        refreshData();
+    };
+
+    const resetForm = () => {
+        setDesc("");
+        setAmount("");
+        setPaidBy("");
+        setIsAdding(false);
+        setEditingId(null);
+        setSplitInputs({});
+        setSplitType("EQUAL");
+        setError("");
     };
 
     const populateForm = (e: Expense) => {
@@ -169,333 +169,373 @@ function GroupView() {
         setSplitType(e.splitType || "EQUAL");
         setEditingId(e.id);
         setIsAdding(true);
+        setError("");
 
-        // Populate split inputs if needed
+        const inputs: Record<string, string> = {};
         if (e.splitType === "EXACT") {
-            const inputs: Record<string, string> = {};
-            e.splits.forEach(s => inputs[s.userId] = s.amount.toString());
-            setSplitInputs(inputs);
+            e.splits.forEach(s => { inputs[s.userId] = s.amount.toFixed(2); });
         } else if (e.splitType === "PERCENTAGE") {
-            const inputs: Record<string, string> = {};
-            e.splits.forEach(s => inputs[s.userId] = ((s.amount / e.amount) * 100).toFixed(2));
-            setSplitInputs(inputs);
-        } else {
-            setSplitInputs({});
+            e.splits.forEach(s => { inputs[s.userId] = ((s.amount / e.amount) * 100).toFixed(2); });
         }
+        setSplitInputs(inputs);
     };
 
-    const resetForm = () => {
-        setDesc("");
-        setAmount("");
-        setIsAdding(false);
-        setEditingId(null);
-        setSplitInputs({});
-        setSplitType("EQUAL");
-        setError("");
-    };
-
-    const handleSaveExpense = (e: React.FormEvent) => {
-        e.preventDefault();
+    const handleSaveExpense = async (ev: React.FormEvent) => {
+        ev.preventDefault();
         setError("");
 
-        if (!desc || !amount || !paidBy) {
-            setError("Please fill all fields");
+        if (!desc.trim() || !amount || !paidBy) {
+            setError("Description, amount and who paid are all needed.");
             return;
         }
         if (!groupId) return;
 
-        const totalVal = parseFloat(amount);
-        if (isNaN(totalVal) || totalVal <= 0) {
-            setError("Invalid amount");
+        const total = parseFloat(amount);
+        if (isNaN(total) || total <= 0) {
+            setError("That amount doesn't look right.");
             return;
         }
 
-        let finalSplits: { userId: string, amount: number }[] = [];
+        let splits: { userId: string; amount: number }[] = [];
 
         if (splitType === "EQUAL") {
-            finalSplits = distributeEqual(totalVal, members.map(m => m.id));
+            // Distribute cents so the shares always add back up to the total exactly.
+            const cents = Math.round(total * 100);
+            const base = Math.floor(cents / members.length);
+            let remainder = cents - base * members.length;
+            splits = members.map(m => {
+                const extra = remainder > 0 ? 1 : 0;
+                remainder -= extra;
+                return { userId: m.id, amount: (base + extra) / 100 };
+            });
         } else if (splitType === "EXACT") {
             let sum = 0;
-            finalSplits = members.map(m => {
+            splits = members.map(m => {
                 const val = parseFloat(splitInputs[m.id] || "0");
                 sum += val;
                 return { userId: m.id, amount: val };
             });
-
-            if (Math.abs(sum - totalVal) > 0.01) {
-                setError(`split amounts ($${sum}) do not match total ($${totalVal})`);
+            if (Math.abs(sum - total) > 0.01) {
+                setError(`Shares add up to ${money(sum)}, but the total is ${money(total)}.`);
                 return;
             }
-        } else if (splitType === "PERCENTAGE") {
+        } else {
             let sum = 0;
-            finalSplits = members.map(m => {
+            splits = members.map(m => {
                 const pct = parseFloat(splitInputs[m.id] || "0");
                 sum += pct;
-                return { userId: m.id, amount: (pct / 100) * totalVal };
+                return { userId: m.id, amount: (pct / 100) * total };
             });
-
             if (Math.abs(sum - 100) > 0.1) {
-                setError(`percentages (${sum}%) do not sum to 100%`);
+                setError(`Percentages add up to ${sum.toFixed(1)}%, not 100%.`);
                 return;
             }
         }
 
+        setSaving(true);
         if (editingId) {
             const existing = expenses.find(e => e.id === editingId);
             if (existing) {
-                StorageService.updateExpense({
+                await StorageService.updateExpense({
                     ...existing,
-                    description: desc,
-                    amount: totalVal,
+                    description: desc.trim(),
+                    amount: total,
                     paidBy,
-                    splits: finalSplits,
+                    splits,
                     splitType
                 });
             }
         } else {
-            StorageService.addExpense(groupId, desc, totalVal, paidBy, finalSplits, splitType);
+            await StorageService.addExpense(groupId, desc.trim(), total, paidBy, splits, splitType);
         }
+        setSaving(false);
 
         resetForm();
         refreshData();
     };
 
-    const handleDeleteExpense = (id: string) => {
-        if (confirm("Delete this expense?")) {
-            StorageService.deleteExpense(id);
-            refreshData();
-        }
+    const handleDeleteExpense = async (id: string) => {
+        if (!confirm("Delete this expense? Everyone's balance will change.")) return;
+        await StorageService.deleteExpense(id);
+        refreshData();
     };
 
-    if (loading || !user) return <div className="container p-4">Loading...</div>;
-    if (!group) return <div className="container p-4">Group not found (or loading...)</div>;
+    const handleDeleteGroup = async () => {
+        if (!group) return;
+        if (!confirm(`Delete "${group.name}" for everyone, including its expenses? This can't be undone.`)) return;
+        await StorageService.deleteGroup(group.id);
+        router.push("/dashboard");
+    };
+
+    const handleLeaveGroup = async () => {
+        if (!group || !userId) return;
+        if (!confirm(`Leave "${group.name}"? The expenses stay, so nobody else's balance changes.`)) return;
+        await StorageService.leaveGroup(group.id, userId);
+        router.push("/dashboard");
+    };
+
+    if (loading || !user) return null;
+
+    if (notFound) {
+        return (
+            <>
+                <AppBar />
+                <main className="container page">
+                    <div className="empty">
+                        <p>That group isn&apos;t here.</p>
+                        <p style={{ marginTop: 8 }}>
+                            It may have been deleted, or you may have left it. <Link href="/dashboard">Back to dashboard</Link>
+                        </p>
+                    </div>
+                </main>
+            </>
+        );
+    }
+
+    if (!group) {
+        return (
+            <>
+                <AppBar />
+                <main className="container page">
+                    <div className="empty"><span className="spin" style={{ verticalAlign: "-2px", marginRight: 8 }} /> Loading…</div>
+                </main>
+            </>
+        );
+    }
+
+    const isAdmin = group.createdBy === user.id;
 
     return (
-        <div className="container" style={{ padding: "2rem 1rem" }}>
-            <Link href="/dashboard" style={{ color: "var(--muted)", fontSize: "0.875rem", marginBottom: "1rem", display: "inline-block" }}>
-                ← Back to Dashboard
-            </Link>
+        <>
+            <AppBar right={<Link href="/profile" className="btn btn-outline btn-sm">Profile</Link>} />
 
-            <header style={{ marginBottom: "2rem", display: "flex", justifyContent: "space-between", alignItems: "start" }}>
-                <div>
-                    <h1 style={{ fontSize: "2rem", marginBottom: "0.5rem" }}>{group.name}</h1>
-                    <p
-                        style={{ color: "var(--muted)", cursor: "pointer", display: "flex", alignItems: "center", gap: "0.5rem" }}
-                        onClick={() => {
-                            navigator.clipboard.writeText(group.id);
-                            alert("Group ID copied to clipboard!");
-                        }}
-                        title="Click to copy full ID"
-                    >
-                        Group ID: {group.id.slice(0, 8)}... 📋
-                    </p>
-                    <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginTop: "1rem" }}>
-                        <p style={{ fontSize: "0.875rem", color: "var(--muted)" }}>Created by {members.find(m => m.id === group.createdBy)?.username || "Unknown"}</p>
-                    </div>
-                </div>
-                <button
-                    onClick={() => {
-                        if (window.confirm("Are you sure you want to delete this group?")) {
-                            StorageService.deleteGroup(group.id);
-                            router.push("/dashboard");
-                        }
-                    }}
-                    className="btn"
-                    style={{ background: "var(--error)", color: "white", fontSize: "0.875rem", padding: "0.5rem 1rem" }}
-                >
-                    Delete Group
-                </button>
-            </header>
+            <main className="container page">
+                <Link href="/dashboard" className="back">← Back to dashboard</Link>
 
-            {/* Admin Section: Join Requests */}
-            {user.id === group.createdBy && requests.length > 0 && (
-                <section style={{ marginBottom: "2rem", padding: "1rem", background: "var(--card-bg)", border: "1px solid var(--primary)", borderRadius: "var(--radius)" }}>
-                    <h2 style={{ fontSize: "1rem", marginBottom: "1rem", color: "var(--primary)" }}>Join Requests 🔔</h2>
-                    <div style={{ display: "grid", gap: "0.5rem" }}>
-                        {requests.map(u => (
-                            <div key={u.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                <span>{u.username} wants to join</span>
-                                <div style={{ display: "flex", gap: "0.5rem" }}>
-                                    <button onClick={() => handleApprove(u.id)} className="btn btn-primary" style={{ padding: "0.25rem 0.75rem", fontSize: "0.75rem" }}>Approve</button>
-                                    <button onClick={() => handleReject(u.id)} className="btn" style={{ padding: "0.25rem 0.75rem", fontSize: "0.75rem", background: "var(--muted-light)" }}>Reject</button>
-                                </div>
+                <header className="page-head">
+                    <div className="row-between wrap" style={{ alignItems: "flex-start" }}>
+                        <div className="row" style={{ alignItems: "flex-start" }}>
+                            <span className="avatar" style={{ width: 44, height: 44, borderRadius: 14, fontSize: "1.1rem" }}>
+                                {group.name.charAt(0).toUpperCase()}
+                            </span>
+                            <div>
+                                <h1 style={{ fontSize: "1.8rem" }}>{group.name}</h1>
+                                <p className="faint" style={{ fontSize: ".84rem", marginTop: 4 }}>
+                                    {members.length} member{members.length === 1 ? "" : "s"} · {expenses.length} expense{expenses.length === 1 ? "" : "s"} · {money(totalTracked)} tracked
+                                </p>
                             </div>
-                        ))}
+                        </div>
+                        <button
+                            className="btn btn-ghost btn-sm"
+                            onClick={() => {
+                                navigator.clipboard.writeText(group.id);
+                                setCopied(true);
+                                setTimeout(() => setCopied(false), 2000);
+                            }}
+                            title="Copy the full group ID"
+                        >
+                            {copied ? "Copied ✓" : "Copy group ID"}
+                        </button>
+                    </div>
+                </header>
+
+                {/* Admin: join requests */}
+                {isAdmin && requests.length > 0 && (
+                    <section className="card card-accent" style={{ marginBottom: 22 }}>
+                        <span className="eyebrow">Join requests</span>
+                        <div className="stack" style={{ marginTop: 14 }}>
+                            {requests.map(u => (
+                                <div key={u.id} className="row-between wrap">
+                                    <span className="row">
+                                        <span className="avatar" style={{ width: 26, height: 26, fontSize: ".75rem" }}>
+                                            {u.username.charAt(0).toUpperCase()}
+                                        </span>
+                                        <span><strong>{u.username}</strong> wants to join</span>
+                                    </span>
+                                    <span className="row">
+                                        <button onClick={() => handleApprove(u.id)} className="btn btn-primary btn-sm">Approve</button>
+                                        <button onClick={() => handleReject(u.id)} className="btn btn-ghost btn-sm">Reject</button>
+                                    </span>
+                                </div>
+                            ))}
+                        </div>
+                    </section>
+                )}
+
+                {/* Balances */}
+                <section style={{ marginBottom: 30 }}>
+                    <h2 style={{ fontSize: "1.2rem", marginBottom: 12 }}>Balances</h2>
+                    <div className="stack">
+                        {members.map(m => {
+                            const b = balances[m.id] || 0;
+                            const up = b > 0.005;
+                            const down = b < -0.005;
+                            return (
+                                <div key={m.id} className="card card-tight row">
+                                    <span className="avatar" style={{ width: 28, height: 28, fontSize: ".8rem" }}>
+                                        {m.username.charAt(0).toUpperCase()}
+                                    </span>
+                                    <span className="grow" style={{ fontWeight: 550 }}>
+                                        {m.username}{m.id === user.id && <span className="faint" style={{ fontWeight: 400 }}> (you)</span>}
+                                    </span>
+                                    <span
+                                        className="tnum"
+                                        style={{ fontWeight: 600, color: up ? "var(--green)" : down ? "var(--red)" : "var(--ink-faint)" }}
+                                    >
+                                        {up ? `gets back ${money(b)}` : down ? `owes ${money(b)}` : "settled up"}
+                                    </span>
+                                </div>
+                            );
+                        })}
                     </div>
                 </section>
-            )}
 
-            {/* Invite Member Section */}
-            <section style={{ marginBottom: "2rem" }}>
-                <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-                    <input
-                        className="input"
-                        placeholder="Invite username..."
-                        value={inviteName}
-                        onChange={e => setInviteName(e.target.value)}
-                        style={{ maxWidth: "200px" }}
-                    />
-                    <button onClick={handleInvite} className="btn" style={{ background: "var(--muted-light)" }} disabled={inviting}>
-                        {inviting ? "Inviting..." : "Invite"}
-                    </button>
-                    {inviteMsg && <span style={{ fontSize: "0.875rem", color: inviteMsg.includes("sent") ? "var(--success)" : "var(--error)" }}>{inviteMsg}</span>}
-                </div>
-                {pending.length > 0 && (
-                    <p style={{ marginTop: "0.75rem", fontSize: "0.8125rem", color: "var(--muted)" }}>
-                        Awaiting acceptance: {pending.map(u => u.username).join(", ")}
-                    </p>
-                )}
-            </section>
+                {/* Expenses */}
+                <section style={{ marginBottom: 30 }}>
+                    <div className="row-between" style={{ marginBottom: 12 }}>
+                        <h2 style={{ fontSize: "1.2rem" }}>Expenses</h2>
+                        <button
+                            onClick={() => { if (isAdding) resetForm(); else { resetForm(); setIsAdding(true); } }}
+                            className="btn btn-primary btn-sm"
+                        >
+                            {isAdding ? "Cancel" : "+ Add expense"}
+                        </button>
+                    </div>
 
-            {/* Balances Section */}
-            <section style={{ marginBottom: "2rem" }}>
-                <h2 style={{ fontSize: "1.25rem", marginBottom: "1rem" }}>Balances</h2>
-                <div style={{ display: "grid", gap: "0.5rem" }}>
-                    {members.map(m => {
-                        const b = balances[m.id] || 0;
-                        const isOwed = b > 0.01;
-                        const isOwing = b < -0.01;
-                        const color = isOwed ? "var(--success)" : isOwing ? "var(--error)" : "var(--muted)";
-                        const text = isOwed ? `gets back $${b.toFixed(2)}` : isOwing ? `owes $${Math.abs(b).toFixed(2)}` : "settled up";
+                    {isAdding && (
+                        <form onSubmit={handleSaveExpense} className="card stack-lg" style={{ marginBottom: 16 }}>
+                            <h3 style={{ fontSize: "1rem" }}>{editingId ? "Edit expense" : "New expense"}</h3>
 
-                        return (
-                            <div key={m.id} className="card" style={{ padding: "1rem", display: "flex", justifyContent: "space-between" }}>
-                                <span style={{ fontWeight: 500 }}>{m.username} {m.id === user?.id && "(You)"}</span>
-                                <span style={{ color, fontWeight: 600 }}>{text}</span>
-                            </div>
-                        );
-                    })}
-                </div>
-            </section>
-
-            {/* Expenses List */}
-            <section>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
-                    <h2 style={{ fontSize: "1.25rem" }}>Expenses</h2>
-                    <button onClick={() => { resetForm(); setIsAdding(!isAdding); }} className="btn btn-primary" style={{ fontSize: "0.875rem" }}>
-                        {isAdding && !editingId ? "Cancel" : "+ Add Expense"}
-                    </button>
-                </div>
-
-                {isAdding && (
-                    <div className="card" style={{ marginBottom: "2rem", background: "var(--muted-light)", border: "none" }}>
-                        <div style={{ marginBottom: "1rem", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                            <h3 style={{ fontSize: "1rem" }}>{editingId ? "Edit Expense" : "Add New Expense"}</h3>
-                            <button onClick={resetForm} style={{ border: "none", background: "none", cursor: "pointer", color: "var(--muted)" }}>✕</button>
-                        </div>
-                        <form onSubmit={handleSaveExpense} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
                             <input
                                 className="input"
-                                placeholder="Description (e.g. Dinner)"
+                                placeholder="What was it? e.g. Dinner at Ramiro"
                                 value={desc}
                                 onChange={e => setDesc(e.target.value)}
                             />
-                            <div style={{ display: "flex", gap: "1rem" }}>
+
+                            <div className="row wrap">
                                 <input
                                     type="number"
-                                    className="input"
+                                    step="0.01"
+                                    className="input grow"
                                     placeholder="0.00"
                                     value={amount}
                                     onChange={e => setAmount(e.target.value)}
-                                    style={{ flex: 1 }}
                                 />
-                                <select
-                                    className="input"
-                                    value={paidBy}
-                                    onChange={e => setPaidBy(e.target.value)}
-                                    style={{ flex: 1 }}
-                                >
-                                    <option value="">Paid by...</option>
+                                <select className="input grow" value={paidBy} onChange={e => setPaidBy(e.target.value)}>
+                                    <option value="">Who paid?</option>
                                     {members.map(m => (
                                         <option key={m.id} value={m.id}>{m.username}</option>
                                     ))}
                                 </select>
                             </div>
 
-                            {/* Split Type Selector */}
-                            <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem" }}>
+                            <div className="row">
                                 {(["EQUAL", "EXACT", "PERCENTAGE"] as const).map(type => (
                                     <button
                                         key={type}
                                         type="button"
                                         onClick={() => setSplitType(type)}
-                                        className="btn"
-                                        style={{
-                                            flex: 1,
-                                            fontSize: "0.75rem",
-                                            background: splitType === type ? "var(--primary)" : "var(--card-bg)",
-                                            color: splitType === type ? "white" : "var(--foreground)",
-                                            border: "1px solid var(--card-border)"
-                                        }}
+                                        className={`btn btn-sm grow ${splitType === type ? "btn-primary" : "btn-outline"}`}
                                     >
-                                        {type}
+                                        {type === "EQUAL" ? "Equally" : type === "EXACT" ? "Exact" : "Percent"}
                                     </button>
                                 ))}
                             </div>
 
-                            {/* Dynamic Inputs for Split */}
                             {splitType !== "EQUAL" && (
-                                <div style={{ display: "grid", gap: "0.5rem", marginTop: "0.5rem" }}>
+                                <div className="stack">
                                     {members.map(m => (
-                                        <div key={m.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: "0.875rem" }}>
-                                            <span>{m.username}</span>
-                                            <div style={{ display: "flex", alignItems: "center", gap: "0.25rem" }}>
-                                                <input
-                                                    type="number"
-                                                    className="input"
-                                                    style={{ width: "80px", padding: "0.5rem" }}
-                                                    value={splitInputs[m.id] || ""}
-                                                    onChange={(e) => handleSplitInputChange(m.id, e.target.value)}
-                                                    placeholder="0"
-                                                />
-                                                <span>{splitType === "PERCENTAGE" ? "%" : "$"}</span>
-                                            </div>
+                                        <div key={m.id} className="row">
+                                            <span className="grow" style={{ fontSize: ".9rem" }}>{m.username}</span>
+                                            <input
+                                                type="number"
+                                                step="0.01"
+                                                className="input"
+                                                style={{ width: 110 }}
+                                                value={splitInputs[m.id] || ""}
+                                                onChange={e => setSplitInputs(prev => ({ ...prev, [m.id]: e.target.value }))}
+                                                placeholder="0"
+                                            />
+                                            <span className="faint" style={{ width: 14 }}>{splitType === "PERCENTAGE" ? "%" : "$"}</span>
                                         </div>
                                     ))}
                                 </div>
                             )}
 
-                            {error && <p style={{ color: "var(--error)", fontSize: "0.875rem" }}>{error}</p>}
-                            <button type="submit" className="btn btn-primary">
-                                {editingId ? "Update Expense" : "Save Expense"}
+                            {error && <p className="notice notice-error">{error}</p>}
+
+                            <button type="submit" className="btn btn-primary" disabled={saving}>
+                                {saving ? <><span className="spin" /> Saving…</> : editingId ? "Update expense" : "Save expense"}
                             </button>
                         </form>
-                    </div>
-                )}
+                    )}
 
-                <div style={{ display: "grid", gap: "0.5rem" }}>
-                    {expenses.length === 0 ? (
-                        <p style={{ color: "var(--muted)", fontStyle: "italic" }}>No expenses yet.</p>
-                    ) : (
-                        expenses.map(e => {
-                            const payerName = members.find(m => m.id === e.paidBy)?.username || "Unknown";
-                            const typeLabel = e.splitType && e.splitType !== "EQUAL" ? `(${e.splitType})` : "";
-                            return (
-                                <div key={e.id} className="card" style={{ padding: "0.75rem 1rem", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                    <div>
-                                        <p style={{ fontWeight: 500 }}>{e.description} <span style={{ fontSize: "0.75rem", color: "var(--muted)" }}>{typeLabel}</span></p>
-                                        <p style={{ fontSize: "0.75rem", color: "var(--muted)" }}>{payerName} paid ${e.amount.toFixed(2)}</p>
+                    <div className="stack">
+                        {expenses.length === 0 ? (
+                            <div className="empty"><p>Nothing spent yet.</p></div>
+                        ) : (
+                            expenses.map(e => {
+                                const payer = members.find(m => m.id === e.paidBy)?.username || "Someone";
+                                const label = e.splitType === "EQUAL" ? "split equally"
+                                    : e.splitType === "EXACT" ? "exact amounts" : "by percentage";
+                                return (
+                                    <div key={e.id} className="card card-tight row">
+                                        <span className="grow">
+                                            <span style={{ fontWeight: 550, display: "block" }}>{e.description}</span>
+                                            <span className="faint" style={{ fontSize: ".78rem" }}>{payer} paid · {label}</span>
+                                        </span>
+                                        <span className="tnum" style={{ fontWeight: 600 }}>{money(e.amount)}</span>
+                                        <button onClick={() => populateForm(e)} className="link-btn" title="Edit" style={{ textDecoration: "none", fontSize: "1.05rem" }}>✎</button>
+                                        <button onClick={() => handleDeleteExpense(e.id)} className="link-btn" title="Delete" style={{ textDecoration: "none", fontSize: "1.05rem", color: "var(--red)" }}>🗑</button>
                                     </div>
-                                    <div style={{ textAlign: "right", display: "flex", alignItems: "center", gap: "1rem" }}>
-                                        <p style={{ fontSize: "0.875rem", fontWeight: 600 }}>${e.amount.toFixed(2)}</p>
-                                        <div style={{ display: "flex", gap: "0.5rem" }}>
-                                            <button onClick={() => populateForm(e)} style={{ border: "none", background: "none", cursor: "pointer", fontSize: "1.2rem" }} title="Edit">✎</button>
-                                            <button onClick={() => handleDeleteExpense(e.id)} style={{ border: "none", background: "none", cursor: "pointer", fontSize: "1.2rem", color: "var(--error)" }} title="Delete">🗑</button>
-                                        </div>
-                                    </div>
-                                </div>
-                            );
-                        })
+                                );
+                            })
+                        )}
+                    </div>
+                </section>
+
+                {/* Members & invites */}
+                <section className="card" style={{ marginBottom: 22 }}>
+                    <h3 style={{ fontSize: "1rem", marginBottom: 12 }}>Invite someone</h3>
+                    <div className="row">
+                        <input
+                            className="input grow"
+                            placeholder="Their username"
+                            value={inviteName}
+                            onChange={e => setInviteName(e.target.value)}
+                            onKeyDown={e => { if (e.key === "Enter") handleInvite(); }}
+                        />
+                        <button onClick={handleInvite} className="btn btn-outline" disabled={inviting}>
+                            {inviting ? <span className="spin" /> : "Invite"}
+                        </button>
+                    </div>
+                    {inviteMsg && (
+                        <p className={`notice ${inviteMsg.ok ? "notice-ok" : "notice-error"}`} style={{ marginTop: 10 }}>
+                            {inviteMsg.text}
+                        </p>
+                    )}
+                    {pending.length > 0 && (
+                        <p className="faint" style={{ fontSize: ".82rem", marginTop: 12 }}>
+                            Waiting on an answer: {pending.map(u => u.username).join(", ")}
+                        </p>
+                    )}
+                </section>
+
+                <div className="row wrap">
+                    <button onClick={handleLeaveGroup} className="btn btn-ghost btn-sm">Leave group</button>
+                    {isAdmin && (
+                        <button onClick={handleDeleteGroup} className="btn btn-danger btn-sm">Delete group</button>
                     )}
                 </div>
-            </section>
-        </div>
+            </main>
+        </>
     );
 }
 
 export default function Page() {
     return (
-        <Suspense fallback={<div>Loading...</div>}>
+        <Suspense fallback={<main className="container page"><div className="empty">Loading…</div></main>}>
             <GroupView />
         </Suspense>
     );

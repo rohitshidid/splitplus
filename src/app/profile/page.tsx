@@ -2,6 +2,7 @@
 
 import { useAuth } from "@/context/AuthContext";
 import { StorageService } from "@/services/StorageService";
+import { GOOGLE_APPS_SCRIPT_SOURCE } from "@/data/googleAppsScript";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -14,10 +15,16 @@ export default function ProfilePage() {
     const [delPassword, setDelPassword] = useState("");
     const [delError, setDelError] = useState("");
     const [isDeleting, setIsDeleting] = useState(false);
+    const [showScript, setShowScript] = useState(false);
+    const [copied, setCopied] = useState(false);
 
     useEffect(() => {
         if (!loading && !user) router.push("/login");
     }, [loading, user, router]);
+
+    // Derived, not stored: this render only happens client-side once a user exists,
+    // so reading localStorage here cannot desync from the server-rendered markup.
+    const groupCount = user ? StorageService.getUserGroups(user.id).length : 0;
 
     const closeDelete = () => {
         setShowDelete(false);
@@ -32,13 +39,12 @@ export default function ProfilePage() {
         setIsDeleting(true);
         setDelError("");
         try {
-            // The username comes from the session, so only the signed-in account can
-            // be deleted here; the password is still required as confirmation.
+            // The username comes from the session, so only the signed-in account can be
+            // deleted here; the password is still required as confirmation.
             await StorageService.deleteAccount(user.username, delPassword);
-            // deleteAccount already cleared the session; drop the in-memory user too.
-            logout();
-        } catch (err: any) {
-            setDelError(err.message || "Failed to delete account");
+            logout(); // deleteAccount cleared the stored session; drop the in-memory user too.
+        } catch (err) {
+            setDelError(err instanceof Error ? err.message : "Failed to delete account");
             setIsDeleting(false);
         }
     };
@@ -46,80 +52,122 @@ export default function ProfilePage() {
     if (loading || !user) return null;
 
     return (
-        <div className="container" style={{ padding: "2rem 1rem" }}>
-            <Link href="/dashboard" style={{ color: "var(--muted)", fontSize: "0.875rem", marginBottom: "1rem", display: "inline-block" }}>
-                ← Back to Dashboard
-            </Link>
+        <>
+            <main className="container page" style={{ maxWidth: 560 }}>
+                <Link href="/dashboard" className="back">← Back to dashboard</Link>
 
-            <div className="card" style={{ maxWidth: "500px", margin: "0 auto", textAlign: "center", padding: "3rem" }}>
-                <div style={{ width: "80px", height: "80px", background: "var(--primary)", color: "white", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "2rem", margin: "0 auto 1.5rem" }}>
-                    {user.username.charAt(0).toUpperCase()}
-                </div>
+                <div className="card" style={{ textAlign: "center", padding: "36px 28px" }}>
+                    <div className="avatar avatar-lg" style={{ margin: "0 auto 18px" }}>
+                        {user.username.charAt(0).toUpperCase()}
+                    </div>
 
-                <h1 style={{ fontSize: "2rem", marginBottom: "0.5rem" }}>{user.username}</h1>
-                <p style={{ color: "var(--muted)", marginBottom: "2rem" }}>Member since {new Date(user.createdAt).toLocaleDateString()}</p>
+                    <h1 style={{ fontSize: "1.7rem" }}>{user.username}</h1>
+                    <p className="faint" style={{ fontSize: ".875rem", marginTop: 6 }}>
+                        Member since {new Date(user.createdAt).toLocaleDateString()} · {groupCount} group{groupCount === 1 ? "" : "s"}
+                    </p>
 
-                <div style={{ display: "flex", gap: "0.75rem", justifyContent: "center", flexWrap: "wrap" }}>
-                    <button onClick={logout} className="btn" style={{ background: "var(--error)", color: "white", padding: "0.75rem 2rem" }}>
-                        Log Out
-                    </button>
-                    {!showDelete && (
-                        <button
-                            type="button"
-                            onClick={() => setShowDelete(true)}
-                            className="btn"
-                            style={{ background: "var(--muted-light)", color: "var(--error)", padding: "0.75rem 2rem", border: "1px solid var(--error)" }}
-                        >
-                            Delete Account
-                        </button>
+                    <div className="row wrap" style={{ justifyContent: "center", marginTop: 26 }}>
+                        <button onClick={logout} className="btn btn-outline">Log out</button>
+                        {!showDelete && (
+                            <button type="button" onClick={() => setShowDelete(true)} className="btn btn-danger">
+                                Delete account
+                            </button>
+                        )}
+                    </div>
+
+                    {showDelete && (
+                        <form onSubmit={handleDelete} className="stack-lg" style={{ marginTop: 26, paddingTop: 22, borderTop: "1px solid var(--line)", textAlign: "left" }}>
+                            <div>
+                                <h2 style={{ fontSize: "1rem", color: "var(--red)" }}>Delete account</h2>
+                                <p className="faint" style={{ fontSize: ".82rem", lineHeight: 1.55, marginTop: 8 }}>
+                                    This permanently removes <strong>{user.username}</strong> and frees the username
+                                    for anyone to claim. You&apos;ll be dropped from your groups, but the expenses stay,
+                                    so nobody else&apos;s balances change. This cannot be undone.
+                                </p>
+                            </div>
+
+                            <div className="field">
+                                <label className="label" htmlFor="delpass">Confirm your password</label>
+                                <input
+                                    id="delpass"
+                                    type="password"
+                                    className="input"
+                                    value={delPassword}
+                                    onChange={e => setDelPassword(e.target.value)}
+                                    autoComplete="current-password"
+                                    required
+                                    placeholder="••••••••"
+                                />
+                            </div>
+
+                            {delError && <p className="notice notice-error">{delError}</p>}
+
+                            <div className="row">
+                                <button type="button" onClick={closeDelete} className="btn btn-ghost grow" disabled={isDeleting}>
+                                    Cancel
+                                </button>
+                                <button type="submit" className="btn btn-danger grow" disabled={isDeleting}>
+                                    {isDeleting ? <><span className="spin" /> Deleting…</> : "Delete forever"}
+                                </button>
+                            </div>
+                        </form>
                     )}
                 </div>
 
-                {showDelete && (
-                    <form onSubmit={handleDelete} style={{ marginTop: "2rem", paddingTop: "1.5rem", borderTop: "1px solid var(--card-border)", display: "flex", flexDirection: "column", gap: "0.75rem", textAlign: "left" }}>
-                        <h2 style={{ fontSize: "1rem", fontWeight: 600, color: "var(--error)" }}>Delete account</h2>
-                        <p style={{ fontSize: "0.8125rem", color: "var(--muted)", lineHeight: 1.5 }}>
-                            This permanently removes <strong>{user.username}</strong> and frees the username
-                            for anyone to claim. Existing groups and expenses are kept, so nobody else&apos;s
-                            balances change. This cannot be undone.
+                {/* The server script used to live on the create-group page, which no longer
+                    asks for one. It still has to be reachable to set up or update a sheet. */}
+                <p style={{ textAlign: "center", marginTop: 20 }}>
+                    <button type="button" className="link-btn" onClick={() => setShowScript(true)}>
+                        View the Google Apps Script
+                    </button>
+                </p>
+            </main>
+
+            {showScript && (
+                <div
+                    role="dialog"
+                    aria-modal="true"
+                    onClick={() => setShowScript(false)}
+                    style={{
+                        position: "fixed", inset: 0, background: "rgba(0,0,0,.45)",
+                        display: "grid", placeItems: "center", padding: 20, zIndex: 100
+                    }}
+                >
+                    <div
+                        onClick={e => e.stopPropagation()}
+                        className="card"
+                        style={{ width: "100%", maxWidth: 860, maxHeight: "88vh", display: "flex", flexDirection: "column", gap: 14 }}
+                    >
+                        <div className="row-between">
+                            <h3 style={{ fontSize: "1.05rem" }}>Google Apps Script</h3>
+                            <div className="row">
+                                <button
+                                    className="btn btn-primary btn-sm"
+                                    onClick={() => {
+                                        navigator.clipboard.writeText(GOOGLE_APPS_SCRIPT_SOURCE);
+                                        setCopied(true);
+                                        setTimeout(() => setCopied(false), 2000);
+                                    }}
+                                >
+                                    {copied ? "Copied ✓" : "Copy code"}
+                                </button>
+                                <button className="btn btn-ghost btn-sm" onClick={() => setShowScript(false)}>Close</button>
+                            </div>
+                        </div>
+                        <p className="faint" style={{ fontSize: ".82rem" }}>
+                            Paste this into your sheet&apos;s Apps Script editor, run <code>setup</code> once, then
+                            deploy as a web app with &ldquo;Execute as: Me&rdquo; and &ldquo;Who has access: Anyone&rdquo;.
                         </p>
-
-                        <div>
-                            <label style={{ display: "block", marginBottom: "0.5rem", fontSize: "0.875rem", fontWeight: 500 }}>Confirm your password</label>
-                            <input
-                                type="password"
-                                className="input"
-                                value={delPassword}
-                                onChange={(e) => setDelPassword(e.target.value)}
-                                required
-                                placeholder="••••••••"
-                            />
-                        </div>
-
-                        {delError && <p style={{ color: "var(--error)", fontSize: "0.875rem" }}>{delError}</p>}
-
-                        <div style={{ display: "flex", gap: "0.75rem" }}>
-                            <button
-                                type="button"
-                                onClick={closeDelete}
-                                className="btn"
-                                style={{ flex: 1, background: "var(--muted-light)", color: "var(--foreground)" }}
-                                disabled={isDeleting}
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                type="submit"
-                                className="btn"
-                                style={{ flex: 1, background: "var(--error)", color: "#ffffff" }}
-                                disabled={isDeleting}
-                            >
-                                {isDeleting ? "Deleting..." : "Delete forever"}
-                            </button>
-                        </div>
-                    </form>
-                )}
-            </div>
-        </div>
+                        <pre style={{
+                            flex: 1, overflow: "auto", margin: 0, padding: "18px 20px",
+                            borderRadius: 14, background: "#16181d", color: "#e6e8ec",
+                            fontFamily: "var(--mono)", fontSize: 12, lineHeight: 1.7
+                        }}>
+                            {GOOGLE_APPS_SCRIPT_SOURCE}
+                        </pre>
+                    </div>
+                </div>
+            )}
+        </>
     );
 }

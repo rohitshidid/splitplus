@@ -17,54 +17,66 @@ export default function LoginPage() {
         setError("");
         try {
             await login(username, password);
-        } catch (err: any) {
-            setError(err.message || "Failed to login");
-        } finally {
+        } catch (err) {
+            setError(err instanceof Error ? err.message : "Failed to log in");
             setIsSubmitting(false);
         }
     };
 
     return (
-        <main className="container" style={{ display: "flex", justifyContent: "center", alignItems: "center", minHeight: "80vh" }}>
-            <div className="card" style={{ width: "100%", maxWidth: "400px" }}>
-                <h1 style={{ fontSize: "1.5rem", textAlign: "center", marginBottom: "1.5rem" }}>Login to Splitplus</h1>
+        <main className="auth-shell">
+            <div className="auth-card">
+                <Link href="/" className="brand" style={{ justifyContent: "center", marginBottom: 22 }}>
+                    <span className="brand-mark">S</span>
+                    Splitplus
+                </Link>
 
-                <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-                    <div>
-                        <label style={{ display: "block", marginBottom: "0.5rem", fontSize: "0.875rem", fontWeight: 500 }}>Username</label>
-                        <input
-                            type="text"
-                            className="input"
-                            value={username}
-                            onChange={(e) => setUsername(e.target.value)}
-                            required
-                            placeholder="e.g. alice"
-                        />
-                    </div>
+                <div className="card">
+                    <h2 style={{ fontSize: "1.4rem", textAlign: "center" }}>Welcome back</h2>
+                    <p className="muted" style={{ textAlign: "center", fontSize: ".9rem", marginTop: 6, marginBottom: 22 }}>
+                        Your groups are waiting, whichever device this is.
+                    </p>
 
-                    <div>
-                        <label style={{ display: "block", marginBottom: "0.5rem", fontSize: "0.875rem", fontWeight: 500 }}>Password</label>
-                        <input
-                            type="password"
-                            className="input"
-                            value={password}
-                            onChange={(e) => setPassword(e.target.value)}
-                            required
-                            placeholder="••••••••"
-                        />
-                    </div>
+                    <form onSubmit={handleSubmit} className="stack-lg">
+                        <div className="field">
+                            <label className="label" htmlFor="username">Username</label>
+                            <input
+                                id="username"
+                                type="text"
+                                className="input"
+                                value={username}
+                                onChange={e => setUsername(e.target.value)}
+                                autoComplete="username"
+                                required
+                                placeholder="e.g. alice"
+                            />
+                        </div>
 
-                    {error && <p style={{ color: "var(--error)", fontSize: "0.875rem" }}>{error}</p>}
+                        <div className="field">
+                            <label className="label" htmlFor="password">Password</label>
+                            <input
+                                id="password"
+                                type="password"
+                                className="input"
+                                value={password}
+                                onChange={e => setPassword(e.target.value)}
+                                autoComplete="current-password"
+                                required
+                                placeholder="••••••••"
+                            />
+                        </div>
 
-                    <button type="submit" className="btn btn-primary" style={{ marginTop: "0.5rem" }} disabled={isSubmitting}>
-                        {isSubmitting ? "Logging in..." : "Login"}
-                    </button>
-                </form>
+                        {error && <p className="notice notice-error">{error}</p>}
 
-                <p style={{ marginTop: "1.5rem", textAlign: "center", fontSize: "0.875rem", color: "var(--muted)" }}>
-                    Don't have an account? <Link href="/signup" style={{ color: "var(--primary)", fontWeight: 500 }}>Sign up</Link>
+                        <button type="submit" className="btn btn-primary" disabled={isSubmitting}>
+                            {isSubmitting ? <><span className="spin" /> Logging in…</> : "Log in"}
+                        </button>
+                    </form>
+                </div>
+
+                <p className="muted" style={{ marginTop: 20, textAlign: "center", fontSize: ".9rem" }}>
+                    Don&apos;t have an account? <Link href="/signup" style={{ fontWeight: 550 }}>Sign up</Link>
                 </p>
-
             </div>
         </main>
     );

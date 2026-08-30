@@ -2,83 +2,124 @@
 
 import { User, Group, Expense, SplitType } from "../types";
 
-// Keys for LocalStorage
+// Keys for LocalStorage. Local storage is a cache and an offline buffer only -
+// the Apps Script sheet is the source of truth, which is what lets the same
+// account see its groups from a laptop and a phone.
 const K_USERS = "splitplus_users";
 const K_GROUPS = "splitplus_groups";
 const K_EXPENSES = "splitplus_expenses";
 const K_CURRENT_USER = "splitplus_current_user_id";
+const K_MIGRATED = "splitplus_migrated_groups";
+
+const SHEET_URL = process.env.NEXT_PUBLIC_AUTH_SHEET_URL;
 
 // Shown when the request never reaches the Apps Script (blocked, offline, or a
 // non-CORS error page), which the browser reports only as a generic failure.
 const UNREACHABLE_SHEET_MSG =
-    "Couldn't reach the auth sheet. Re-deploy the Apps Script web app with " +
+    "Couldn't reach the Splitplus sheet. Re-deploy the Apps Script web app with " +
     "\"Execute as: Me\" and \"Who has access: Anyone\", then update NEXT_PUBLIC_AUTH_SHEET_URL.";
 
+interface SheetResponse {
+    status: string;
+    message?: string;
+    [key: string]: unknown;
+}
+
 export const StorageService = {
-    // --- Helpers ---
+    // --- Transport ---
+
+    /** True when a backend is configured. Without one the app is single-device. */
+    isSynced: (): boolean => Boolean(SHEET_URL),
+
+    /**
+     * text/plain keeps this a "simple" request, so the browser skips the CORS
+     * preflight that Apps Script cannot answer.
+     */
+    _post: async (action: string, payload: unknown): Promise<SheetResponse | null> => {
+        if (!SHEET_URL) return null;
+        try {
+            const res = await fetch(SHEET_URL, {
+                method: "POST",
+                headers: { "Content-Type": "text/plain;charset=utf-8" },
+                body: JSON.stringify({ action, payload })
+            });
+            return await res.json();
+        } catch (e) {
+            console.error(`Sheet request failed: ${action}`, e);
+            return null;
+        }
+    },
+
+    _fetch: async (params: Record<string, string>): Promise<SheetResponse | null> => {
+        if (!SHEET_URL) return null;
+        try {
+            const qs = new URLSearchParams(params).toString();
+            const res = await fetch(`${SHEET_URL}?${qs}`);
+            return await res.json();
+        } catch (e) {
+            console.error("Sheet request failed", params, e);
+            return null;
+        }
+    },
+
+    // --- Local cache helpers ---
+
     _get: <T>(key: string): T[] => {
         if (typeof window === "undefined") return [];
         const data = localStorage.getItem(key);
-        return data ? JSON.parse(data) : [];
+        if (!data) return [];
+        try {
+            const parsed = JSON.parse(data);
+            return Array.isArray(parsed) ? parsed : [];
+        } catch {
+            return [];
+        }
     },
 
-    _save: (key: string, data: any[]) => {
+    _save: (key: string, data: unknown[]) => {
         if (typeof window === "undefined") return;
         localStorage.setItem(key, JSON.stringify(data));
     },
 
     hashPassword: async (password: string): Promise<string> => {
         const msgBuffer = new TextEncoder().encode(password);
-        const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+        const hashBuffer = await crypto.subtle.digest("SHA-256", msgBuffer);
         const hashArray = Array.from(new Uint8Array(hashBuffer));
-        const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-        return hashHex;
+        return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
     },
 
     // --- Users ---
+
     getUsers: (): User[] => StorageService._get<User>(K_USERS),
 
     findUserByUsername: (username: string): User | undefined => {
         const users = StorageService.getUsers();
-        return users.find((u) => u.username.toLowerCase() === username.toLowerCase());
+        return users.find(u => u.username.toLowerCase() === username.toLowerCase());
     },
 
     /**
-     * Resolves a username to an account, consulting the global auth sheet when the
-     * local cache misses. Inviting someone who signed up on a different device is
-     * the normal case, so a local-only lookup would fail for almost every invite.
+     * Resolves a username to an account, consulting the sheet when the local cache
+     * misses. Inviting someone who signed up on their own device is the normal
+     * case, so a local-only lookup would fail for almost every invite.
      */
     findUserByUsernameRemote: async (username: string): Promise<User | undefined> => {
         const local = StorageService.findUserByUsername(username);
         if (local) return local;
 
-        const sheetUrl = process.env.NEXT_PUBLIC_AUTH_SHEET_URL;
-        if (!sheetUrl) return undefined;
+        const data = await StorageService._post("FIND_USER", { username });
+        if (!data || data.status !== "success" || !data.user) return undefined;
 
-        try {
-            const res = await fetch(sheetUrl, {
-                method: "POST",
-                headers: { "Content-Type": "text/plain;charset=utf-8" },
-                body: JSON.stringify({ action: "FIND_USER", payload: { username } })
-            });
-            const data = await res.json();
-            if (data.status !== "success" || !data.user) return undefined;
-
-            // Cache a stub so the synchronous lookups elsewhere resolve this name.
-            const stub: User = { id: data.user.id, username: data.user.username, password: "", createdAt: Date.now() };
-            StorageService._cacheUsers([stub]);
-            return stub;
-        } catch (e) {
-            console.error("User lookup on auth sheet failed", e);
-            return undefined;
-        }
+        const found = data.user as { id: string; username: string };
+        const stub: User = { id: found.id, username: found.username, password: "", createdAt: Date.now() };
+        StorageService._cacheUsers([stub]);
+        return stub;
     },
 
     /**
      * Merges user records into the local cache without clobbering real credentials
      * with the blank password a stub carries.
      */
-    _cacheUsers: (incoming: User[]) => {
+    _cacheUsers: (incoming: { id: string; username: string }[]) => {
         if (incoming.length === 0) return;
         const users = StorageService._get<User>(K_USERS);
         let changed = false;
@@ -87,9 +128,9 @@ export const StorageService = {
             if (!u.id) return;
             const idx = users.findIndex(existing => existing.id === u.id);
             if (idx === -1) {
-                users.push(u);
+                users.push({ id: u.id, username: u.username, password: "", createdAt: Date.now() });
                 changed = true;
-            } else if (users[idx].username !== u.username && u.username) {
+            } else if (u.username && users[idx].username !== u.username) {
                 users[idx] = { ...users[idx], username: u.username };
                 changed = true;
             }
@@ -99,156 +140,93 @@ export const StorageService = {
     },
 
     createUser: async (username: string, password: string): Promise<User> => {
-        const authSheetUrl = process.env.NEXT_PUBLIC_AUTH_SHEET_URL;
         const hashedPassword = await StorageService.hashPassword(password);
 
-        if (authSheetUrl) {
-            // Global Auth
-            let data: any;
-            try {
-                const res = await fetch(authSheetUrl, {
-                    method: "POST",
-                    headers: { "Content-Type": "text/plain;charset=utf-8" },
-                    body: JSON.stringify({
-                        action: "SIGNUP",
-                        payload: { id: crypto.randomUUID(), username, password: hashedPassword }
-                    })
-                });
-                data = await res.json();
-            } catch (e: any) {
-                // A blocked/errored request never reaches the script, so the browser
-                // only reports a generic network failure ("Load failed" / "Failed to fetch").
-                console.error("Signup request to auth sheet failed", e);
-                throw new Error(UNREACHABLE_SHEET_MSG);
-            }
-
-            if (data.status === "success" && data.user) {
-                const user: User = {
-                    id: data.user.id,
-                    username: data.user.username,
-                    // Cache the hash (never the plaintext) so login works offline too.
-                    password: hashedPassword,
-                    createdAt: Date.now()
-                };
-                // Auto-login: Set session immediately
-                localStorage.setItem(K_CURRENT_USER, user.id);
-
-                // Cache user locally if needed for synchronous lookups
-                let localUsers = StorageService._get<User>(K_USERS);
-                if (!localUsers.find(u => u.id === user.id)) {
-                    localUsers.push(user);
-                    StorageService._save(K_USERS, localUsers);
-                }
-
-                return user;
-            } else {
-                throw new Error(data.message || "Signup failed");
-            }
-
-        } else {
-            // Local Auth
+        if (!SHEET_URL) {
+            // Local-only fallback: no backend configured.
             const users = StorageService.getUsers();
-            if (users.find((u) => u.username.toLowerCase() === username.toLowerCase())) {
+            if (users.find(u => u.username.toLowerCase() === username.toLowerCase())) {
                 throw new Error("Username already taken");
             }
 
-            const newUser: User = {
-                id: crypto.randomUUID(),
-                username,
-                password: hashedPassword,
-                createdAt: Date.now(),
-            };
-
+            const newUser: User = { id: crypto.randomUUID(), username, password: hashedPassword, createdAt: Date.now() };
             users.push(newUser);
             StorageService._save(K_USERS, users);
-
-            // Auto-login
             localStorage.setItem(K_CURRENT_USER, newUser.id);
-
             return newUser;
         }
+
+        const data = await StorageService._post("SIGNUP", {
+            id: crypto.randomUUID(),
+            username,
+            password: hashedPassword
+        });
+
+        if (!data) throw new Error(UNREACHABLE_SHEET_MSG);
+        if (data.status !== "success" || !data.user) throw new Error(data.message || "Signup failed");
+
+        const remote = data.user as { id: string; username: string };
+        const user: User = {
+            id: remote.id,
+            username: remote.username,
+            // Cache the hash (never the plaintext) so login works offline too.
+            password: hashedPassword,
+            createdAt: Date.now()
+        };
+
+        StorageService._upsertLocalUser(user);
+        localStorage.setItem(K_CURRENT_USER, user.id);
+        return user;
+    },
+
+    _upsertLocalUser: (user: User) => {
+        const users = StorageService._get<User>(K_USERS);
+        const idx = users.findIndex(u => u.id === user.id);
+        if (idx === -1) users.push(user);
+        else users[idx] = { ...users[idx], ...user };
+        StorageService._save(K_USERS, users);
     },
 
     login: async (username: string, password: string): Promise<User> => {
-        const sheetUrl = process.env.NEXT_PUBLIC_AUTH_SHEET_URL;
         const hashedPassword = await StorageService.hashPassword(password);
-        let sheetUnreachable = false;
 
         // The sheet is the source of truth when configured: it is the only store that
         // knows about accounts created in another browser or on another device.
-        if (sheetUrl) {
-            let data: any = null;
-            try {
-                const res = await fetch(sheetUrl, {
-                    method: "POST",
-                    headers: { "Content-Type": "text/plain;charset=utf-8" },
-                    body: JSON.stringify({
-                        action: "LOGIN",
-                        payload: { username, password: hashedPassword }
-                    })
-                });
-                data = await res.json();
-            } catch (e) {
-                // Fall through to local verification so a network blip doesn't lock
-                // out an account this browser already knows about.
-                console.error("Login request to auth sheet failed", e);
-                sheetUnreachable = true;
-            }
+        if (SHEET_URL) {
+            const data = await StorageService._post("LOGIN", { username, password: hashedPassword });
 
             if (data) {
                 if (data.status !== "success" || !data.user) {
                     throw new Error(data.message || "Invalid credentials");
                 }
 
-                const user: User = {
-                    id: data.user.id,
-                    username: data.user.username,
-                    password: hashedPassword,
-                    createdAt: Date.now()
-                };
+                const remote = data.user as { id: string; username: string };
+                const user: User = { id: remote.id, username: remote.username, password: hashedPassword, createdAt: Date.now() };
 
-                // Cache locally so the synchronous lookups elsewhere resolve this user.
-                const localUsers = StorageService._get<User>(K_USERS);
-                const idx = localUsers.findIndex(u => u.id === user.id);
-                if (idx === -1) {
-                    localUsers.push(user);
-                } else {
-                    localUsers[idx] = { ...localUsers[idx], ...user };
-                }
-                StorageService._save(K_USERS, localUsers);
-
+                StorageService._upsertLocalUser(user);
                 localStorage.setItem(K_CURRENT_USER, user.id);
-                // Awaited: a fresh device has no groups in localStorage, so returning
-                // before the pull lands renders an empty dashboard.
-                await StorageService.fetchUserGroups(user.id);
+
+                // Awaited: a fresh device has no groups cached, so returning before the
+                // pull lands renders an empty dashboard.
+                await StorageService.syncAll(user.id);
 
                 return user;
             }
+            // Fall through to local verification so a network blip doesn't lock out
+            // an account this browser already knows about.
         }
 
-        // Local verification: no sheet configured, or the sheet was unreachable.
         const user = StorageService.findUserByUsername(username);
-
         if (!user || (user.password !== hashedPassword && user.password !== password)) {
-            throw new Error(sheetUnreachable ? UNREACHABLE_SHEET_MSG : "Invalid credentials");
+            throw new Error(SHEET_URL ? UNREACHABLE_SHEET_MSG : "Invalid credentials");
         }
 
         if (user.password === password) {
             // Legacy migration: plaintext on record, replace it with the hash.
-            user.password = hashedPassword;
-            const all = StorageService.getUsers();
-            const idx = all.findIndex(u => u.id === user.id);
-            if (idx !== -1) {
-                all[idx] = user;
-                StorageService._save(K_USERS, all);
-            }
+            StorageService._upsertLocalUser({ ...user, password: hashedPassword });
         }
 
         localStorage.setItem(K_CURRENT_USER, user.id);
-
-        // Attempt to sync groups
-        await StorageService.fetchUserGroups(user.id);
-
         return user;
     },
 
@@ -256,43 +234,31 @@ export const StorageService = {
         localStorage.removeItem(K_CURRENT_USER);
     },
 
+    getCurrentUser: (): User | null => {
+        if (typeof window === "undefined") return null;
+        const id = localStorage.getItem(K_CURRENT_USER);
+        if (!id) return null;
+        return StorageService.getUsers().find(u => u.id === id) || null;
+    },
+
     /**
-     * Permanently deletes an account and frees its username.
-     *
-     * Requires the account's own password: this runs from the login page, where
-     * nobody is authenticated yet. Group memberships and expenses are deliberately
-     * left intact so other members' balances do not shift; the departed user simply
-     * stops resolving to a name.
+     * Permanently deletes an account and frees its username. Requires the account's
+     * own password as confirmation. Expenses are deliberately left intact so other
+     * members' balances do not shift; the departed user stops resolving to a name.
      */
     deleteAccount: async (username: string, password: string): Promise<void> => {
-        const sheetUrl = process.env.NEXT_PUBLIC_AUTH_SHEET_URL;
         const hashedPassword = await StorageService.hashPassword(password);
         let deletedId: string;
 
-        if (sheetUrl) {
-            let data: any;
-            try {
-                const res = await fetch(sheetUrl, {
-                    method: "POST",
-                    headers: { "Content-Type": "text/plain;charset=utf-8" },
-                    body: JSON.stringify({
-                        action: "DELETE_ACCOUNT",
-                        payload: { username, password: hashedPassword }
-                    })
-                });
-                data = await res.json();
-            } catch (e) {
-                // Deliberately do NOT fall back to a local-only delete: the sheet row
-                // would survive, keeping the username taken everywhere while the
-                // account vanished from this device.
-                console.error("Delete request to auth sheet failed", e);
-                throw new Error(UNREACHABLE_SHEET_MSG);
-            }
+        if (SHEET_URL) {
+            const data = await StorageService._post("DELETE_ACCOUNT", { username, password: hashedPassword });
 
-            if (data.status !== "success" || !data.user) {
-                throw new Error(data.message || "Invalid credentials");
-            }
-            deletedId = data.user.id;
+            // Deliberately no local-only fallback: the sheet row would survive, keeping
+            // the username taken everywhere while the account vanished from this device.
+            if (!data) throw new Error(UNREACHABLE_SHEET_MSG);
+            if (data.status !== "success" || !data.user) throw new Error(data.message || "Invalid credentials");
+
+            deletedId = (data.user as { id: string }).id;
         } else {
             const local = StorageService.findUserByUsername(username);
             if (!local || (local.password !== hashedPassword && local.password !== password)) {
@@ -306,337 +272,168 @@ export const StorageService = {
 
     /** Local cleanup after the account record itself is gone. */
     _purgeLocalUser: (userId: string) => {
-        // Hand any group this user created to the longest-standing remaining member,
-        // so approve/reject powers stay reachable. members[] is append-ordered with
-        // the creator first, making the first survivor the longest-standing one.
-        const groups = StorageService.getGroups();
-        const reassigned: Group[] = [];
-
-        groups.forEach(g => {
-            if (g.createdBy !== userId) return;
-            const heir = g.members.find(id => id !== userId);
-            if (!heir) return; // Sole member: nothing to hand off to.
-            g.createdBy = heir;
-            reassigned.push(g);
-        });
-
-        if (reassigned.length > 0) {
-            StorageService._save(K_GROUPS, groups);
-            // Push the new admin out before dropping the local user record, so the
-            // group's Members tab keeps their real username rather than a placeholder.
-            reassigned.forEach(g => {
-                if (g.storageType === "SHEET") StorageService.syncToSheet(g);
-            });
-        }
-
         const remaining = StorageService.getUsers().filter(u => u.id !== userId);
         StorageService._save(K_USERS, remaining);
+
+        // Group membership was already rewritten server-side; drop the local copies
+        // so a stale cache can't push the deleted user back.
+        const groups = StorageService.getGroups().filter(g => !g.members.includes(userId));
+        StorageService._save(K_GROUPS, groups);
 
         if (localStorage.getItem(K_CURRENT_USER) === userId) {
             localStorage.removeItem(K_CURRENT_USER);
         }
     },
 
-    getCurrentUser: (): User | null => {
-        if (typeof window === "undefined") return null;
-        const id = localStorage.getItem(K_CURRENT_USER);
-        if (!id) return null;
-        const users = StorageService.getUsers();
-        return users.find((u) => u.id === id) || null;
+    // --- Groups ---
+
+    getGroups: (): Group[] => {
+        const groups = StorageService._get<Group>(K_GROUPS);
+        // Migration for legacy groups, including ones created before the per-group
+        // sheet was removed.
+        return groups.map(g => ({
+            id: g.id,
+            name: g.name,
+            members: g.members || [],
+            pendingMembers: g.pendingMembers || [],
+            joinRequests: g.joinRequests || [],
+            image: g.image,
+            createdBy: g.createdBy || (g.members?.[0] || ""),
+            createdAt: g.createdAt || Date.now()
+        }));
     },
 
-    // --- Groups ---
-    createGroup: (name: string, memberIds: string[], creatorId: string, storageType: 'LOCAL' | 'SHEET' = 'LOCAL', connectionString = ""): Group => {
+    getUserGroups: (userId: string): Group[] =>
+        StorageService.getGroups().filter(g => g.members.includes(userId)),
+
+    getPendingInvites: (userId: string): Group[] =>
+        StorageService.getGroups().filter(g => g.pendingMembers?.includes(userId)),
+
+    getGroup: (groupId: string): Group | undefined =>
+        StorageService.getGroups().find(g => g.id === groupId),
+
+    _saveGroupLocal: (group: Group) => {
         const groups = StorageService.getGroups();
+        const idx = groups.findIndex(g => g.id === group.id);
+        if (idx === -1) groups.push(group);
+        else groups[idx] = group;
+        StorageService._save(K_GROUPS, groups);
+    },
+
+    createGroup: async (name: string, memberIds: string[], creatorId: string): Promise<Group> => {
         const newGroup: Group = {
             id: crypto.randomUUID(),
             name,
-            members: [creatorId], // Only creator is active initially
-            pendingMembers: memberIds.filter(id => id !== creatorId), // Others are pending
+            members: [creatorId], // Only the creator is active initially
+            pendingMembers: memberIds.filter(id => id !== creatorId), // Others are invited
             joinRequests: [],
             createdBy: creatorId,
-            createdAt: Date.now(),
-            storageType,
-            connectionString
+            createdAt: Date.now()
         };
-        groups.push(newGroup);
-        StorageService._save(K_GROUPS, groups);
+
+        StorageService._saveGroupLocal(newGroup);
+        StorageService._markMigrated(newGroup.id);
+        await StorageService._post("SAVE_GROUP", newGroup);
 
         return newGroup;
     },
 
+    deleteGroup: async (groupId: string): Promise<void> => {
+        StorageService._save(K_GROUPS, StorageService.getGroups().filter(g => g.id !== groupId));
+        StorageService._save(K_EXPENSES, StorageService.getExpenses().filter(e => e.groupId !== groupId));
+        await StorageService._post("DELETE_GROUP", { groupId });
+    },
+
     /**
-     * Publishes a freshly created group. Split from createGroup so the caller can
-     * await the network work and only navigate once the invitees can actually see it.
+     * Applies a membership change on the server and adopts the group it returns.
+     * The server owns these edits so two people acting at once cannot overwrite
+     * each other with their own stale copy of the member lists.
      */
-    publishNewGroup: async (group: Group): Promise<void> => {
-        if (group.storageType === 'SHEET' && group.connectionString) {
-            await StorageService.syncToSheet(group);
+    _membership: async (groupId: string, userId: string, op: string): Promise<boolean> => {
+        const data = await StorageService._post("MEMBERSHIP", { groupId, userId, op });
+
+        if (data && data.status === "success" && data.group) {
+            StorageService._saveGroupLocal(data.group as Group);
+            return true;
         }
 
-        const link = group.storageType === 'SHEET' ? group.connectionString : undefined;
+        if (SHEET_URL) return false;
 
-        // Everyone invited at creation time needs the link on their own row, or the
-        // group never shows up in their invites.
-        await StorageService.addUserGroupToGlobalSheet(group.createdBy, group.id, link);
-        if (link) {
-            await Promise.all(
-                (group.pendingMembers || []).map(id =>
-                    StorageService.addUserGroupToGlobalSheet(id, group.id, link)
-                )
-            );
-        }
-    },
+        // No backend configured: apply locally so single-device use still works.
+        const group = StorageService.getGroup(groupId);
+        if (!group) return false;
 
-    getGroups: (): Group[] => {
-        const groups = StorageService._get<Group>(K_GROUPS);
-        // Migration for legacy groups
-        return groups.map(g => ({
-            ...g,
-            pendingMembers: g.pendingMembers || [],
-            joinRequests: g.joinRequests || [],
-            createdBy: g.createdBy || (g.members[0] || ""), // Fallback to first member
-            storageType: g.storageType || 'LOCAL',
-            connectionString: g.connectionString || ""
-        }));
-    },
+        const drop = (list: string[]) => list.filter(id => id !== userId);
+        const add = (list: string[]) => (list.includes(userId) ? list : [...list, userId]);
 
-    getUserGroups: (userId: string): Group[] => {
-        const groups = StorageService.getGroups();
-        return groups.filter(g => g.members.includes(userId));
-    },
-
-    getPendingInvites: (userId: string): Group[] => {
-        const groups = StorageService.getGroups();
-        return groups.filter(g => g.pendingMembers?.includes(userId));
-    },
-
-    deleteGroup: (groupId: string) => {
-        // Remove Group
-        let groups = StorageService.getGroups();
-        const groupIndex = groups.findIndex(g => g.id === groupId);
-
-        if (groupIndex !== -1) {
-            groups.splice(groupIndex, 1);
-            StorageService._save(K_GROUPS, groups);
-
-            // Remove associated Expenses
-            let expenses = StorageService.getExpenses();
-            expenses = expenses.filter(e => e.groupId !== groupId);
-            StorageService._save(K_EXPENSES, expenses);
-        }
-    },
-
-    // --- Google Sheets Sync (Updated) ---
-
-    syncToSheet: async (group: Group) => {
-        if (group.storageType !== 'SHEET' || !group.connectionString) return;
-
-        const allUsers = StorageService.getUsers();
-
-        // The sheet is written wholesale, so a name this device doesn't know would be
-        // overwritten with a placeholder. Read the current names first and keep them.
-        const remoteNames: Record<string, string> = {};
-        try {
-            const res = await fetch(`${group.connectionString}?action=GET_ALL`);
-            const existing = await res.json();
-            (existing?.data?.members || []).forEach((m: any) => {
-                if (m.id && m.username) remoteNames[m.id] = m.username;
-            });
-        } catch {
-            // Non-fatal: fall back to whatever this device knows.
+        if (op === "invite") group.pendingMembers = add(group.pendingMembers);
+        else if (op === "request") group.joinRequests = add(group.joinRequests);
+        else if (op === "accept" || op === "approve") {
+            group.members = add(group.members);
+            group.pendingMembers = drop(group.pendingMembers);
+            group.joinRequests = drop(group.joinRequests);
+        } else if (op === "decline" || op === "reject") {
+            group.pendingMembers = drop(group.pendingMembers);
+            group.joinRequests = drop(group.joinRequests);
+        } else if (op === "leave") {
+            group.members = drop(group.members);
         }
 
-        const nameFor = (id: string) =>
-            allUsers.find(u => u.id === id)?.username || remoteNames[id] || "User";
-
-        const membersPayload = [
-            ...group.members.map(id => ({ id, username: nameFor(id), status: "active" })),
-            ...(group.pendingMembers || []).map(id => ({ id, username: nameFor(id), status: "pending" })),
-            ...(group.joinRequests || []).map(id => ({ id, username: nameFor(id), status: "requested" }))
-        ];
-
-        const payload = {
-            meta: { id: group.id, name: group.name, createdBy: group.createdBy },
-            members: membersPayload,
-            expenses: StorageService.getGroupExpenses(group.id)
-        };
-
-        try {
-            await fetch(group.connectionString, {
-                method: "POST",
-                mode: "no-cors",
-                headers: { "Content-Type": "text/plain;charset=utf-8" }, // text/plain enables simple POST without preflight
-                body: JSON.stringify({ action: "SYNC_GROUP", payload })
-            });
-        } catch (err) {
-            console.error("Failed to sync to sheet", err);
-        }
+        StorageService._saveGroupLocal(group);
+        return true;
     },
 
-    syncFromSheet: async (group: Group) => {
-        if (group.storageType !== 'SHEET' || !group.connectionString) return;
+    inviteMember: (groupId: string, userId: string) => StorageService._membership(groupId, userId, "invite"),
+    acceptInvite: (groupId: string, userId: string) => StorageService._membership(groupId, userId, "accept"),
+    declineInvite: (groupId: string, userId: string) => StorageService._membership(groupId, userId, "decline"),
+    approveJoinRequest: (groupId: string, userId: string) => StorageService._membership(groupId, userId, "approve"),
+    rejectJoinRequest: (groupId: string, userId: string) => StorageService._membership(groupId, userId, "reject"),
+    leaveGroup: (groupId: string, userId: string) => StorageService._membership(groupId, userId, "leave"),
 
-        let data: any;
-        try {
-            const res = await fetch(`${group.connectionString}?action=GET_ALL`);
-            data = await res.json();
-        } catch (err) {
-            console.error("Failed to sync from sheet", err);
-            return;
+    /**
+     * Joining by ID has to work for a group this device has never seen, so the group
+     * is fetched by id rather than looked up in the local cache.
+     */
+    requestJoin: async (groupId: string, userId: string): Promise<{ ok: boolean; message: string }> => {
+        let group = StorageService.getGroup(groupId);
+
+        if (!group) {
+            const data = await StorageService._fetch({ action: "GET_GROUP", groupId });
+            if (!data) return { ok: false, message: UNREACHABLE_SHEET_MSG };
+            if (data.status !== "success" || !data.group) return { ok: false, message: "Group not found." };
+
+            group = data.group as Group;
+            StorageService._saveGroupLocal(group);
         }
 
-        if (data.status !== "success" || !data.data) return;
+        if (group.members.includes(userId)) return { ok: false, message: "You are already in this group." };
+        if (group.joinRequests?.includes(userId)) return { ok: false, message: "Request already sent." };
 
-        // 1. Members & status
-        const sheetMembers = data.data.members || [];
-        const active: string[] = [];
-        const pending: string[] = [];
-        const requests: string[] = [];
-        const seenUsers: User[] = [];
+        const wasInvited = group.pendingMembers?.includes(userId);
+        const ok = await StorageService._membership(group.id, userId, "request");
+        if (!ok) return { ok: false, message: UNREACHABLE_SHEET_MSG };
 
-        sheetMembers.forEach((row: any) => {
-            if (!row.id) return;
-            if (row.status === "active") active.push(row.id);
-            else if (row.status === "pending") pending.push(row.id);
-            else if (row.status === "requested") requests.push(row.id);
-
-            seenUsers.push({ id: row.id, username: row.username, password: "", createdAt: Date.now() });
-        });
-
-        // Cached in one pass so member names render even for accounts this device
-        // has never authenticated.
-        StorageService._cacheUsers(seenUsers);
-
-        const groups = StorageService.getGroups();
-        let target = groups.find(g => g.id === group.id);
-        if (!target) {
-            // The group was pulled in mid-flight (or purged); re-add it rather than
-            // dropping the data we just fetched.
-            target = { ...group };
-            groups.push(target);
-        }
-
-        target.members = active;
-        target.pendingMembers = pending;
-        target.joinRequests = requests;
-        target.storageType = 'SHEET';
-        target.connectionString = group.connectionString;
-
-        const meta = data.data.meta || {};
-        if (meta.name) target.name = meta.name;
-        // Without this the admin controls are unreachable on a second device.
-        if (meta.createdBy) target.createdBy = meta.createdBy;
-
-        StorageService._save(K_GROUPS, groups);
-
-        // 2. Expenses
-        const remoteExpenses = (data.data.expenses || []).map((e: any) => ({
-            ...e,
-            amount: Number(e.amount) || 0,
-            createdAt: Number(e.createdAt) || 0,
-            splits: (e.splits || []).map((sp: any) => ({ userId: sp.userId, amount: Number(sp.amount) || 0 }))
-        }));
-
-        let allExpenses = StorageService.getExpenses();
-        allExpenses = allExpenses.filter(e => e.groupId !== group.id);
-        allExpenses.push(...remoteExpenses);
-        StorageService._save(K_EXPENSES, allExpenses);
-    },
-
-    // --- Approvals & Invites ---
-
-    requestJoin: async (groupId: string, userId: string): Promise<void> => {
-        const groups = StorageService.getGroups();
-        const group = groups.find(g => g.id === groupId);
-        if (!group || group.members.includes(userId) || group.joinRequests.includes(userId)) return;
-
-        group.joinRequests.push(userId);
-        StorageService._save(K_GROUPS, groups);
-        // The admin is on another device; the group sheet is the only shared channel.
-        if (group.storageType === 'SHEET') await StorageService.syncToSheet(group);
-    },
-
-    inviteMember: async (groupId: string, userId: string): Promise<void> => {
-        const groups = StorageService.getGroups();
-        const group = groups.find(g => g.id === groupId);
-        if (!group || group.members.includes(userId) || group.pendingMembers.includes(userId)) return;
-
-        group.pendingMembers.push(userId);
-        StorageService._save(K_GROUPS, groups);
-
-        if (group.storageType !== 'SHEET' || !group.connectionString) {
-            // A LOCAL group lives only in this browser, so there is nothing the
-            // invitee's device could read. The caller surfaces this to the user.
-            return;
-        }
-
-        await StorageService.syncToSheet(group);
-
-        // The invitee's device discovers groups only through the group links on their
-        // own row in the global auth sheet. Without this the invite is written to the
-        // group sheet and never seen by anyone but the inviter.
-        await StorageService.addUserGroupToGlobalSheet(userId, group.id, group.connectionString);
-    },
-
-    acceptInvite: async (groupId: string, userId: string): Promise<void> => {
-        const groups = StorageService.getGroups();
-        const group = groups.find(g => g.id === groupId);
-        if (!group) return;
-
-        group.pendingMembers = group.pendingMembers.filter(id => id !== userId);
-        if (!group.members.includes(userId)) {
-            group.members.push(userId);
-        }
-        StorageService._save(K_GROUPS, groups);
-        if (group.storageType === 'SHEET') await StorageService.syncToSheet(group);
-
-        // Sync to global
-        await StorageService.addUserGroupToGlobalSheet(userId, group.id, group.storageType === 'SHEET' ? group.connectionString : undefined);
-    },
-
-    declineInvite: async (groupId: string, userId: string): Promise<void> => {
-        const groups = StorageService.getGroups();
-        const group = groups.find(g => g.id === groupId);
-        if (!group) return;
-
-        group.pendingMembers = group.pendingMembers.filter(id => id !== userId);
-        StorageService._save(K_GROUPS, groups);
-        // Push the removal out, otherwise the next sync re-adds the invite.
-        if (group.storageType === 'SHEET') await StorageService.syncToSheet(group);
-    },
-
-    approveJoinRequest: async (groupId: string, userId: string): Promise<void> => {
-        const groups = StorageService.getGroups();
-        const group = groups.find(g => g.id === groupId);
-        if (!group) return;
-
-        group.joinRequests = group.joinRequests.filter(id => id !== userId);
-        if (!group.members.includes(userId)) {
-            group.members.push(userId);
-        }
-        StorageService._save(K_GROUPS, groups);
-        if (group.storageType === 'SHEET') await StorageService.syncToSheet(group);
-
-        // Sync to global
-        await StorageService.addUserGroupToGlobalSheet(userId, group.id, group.storageType === 'SHEET' ? group.connectionString : undefined);
-    },
-
-    rejectJoinRequest: async (groupId: string, userId: string): Promise<void> => {
-        const groups = StorageService.getGroups();
-        const group = groups.find(g => g.id === groupId);
-        if (!group) return;
-
-        group.joinRequests = group.joinRequests.filter(id => id !== userId);
-        StorageService._save(K_GROUPS, groups);
-        if (group.storageType === 'SHEET') await StorageService.syncToSheet(group);
+        // The server turns a request into a join when an invite was already waiting.
+        return { ok: true, message: wasInvited ? "You had an invite - you're in!" : "Request sent to the group admin." };
     },
 
     // --- Expenses ---
+
     getExpenses: (): Expense[] => StorageService._get<Expense>(K_EXPENSES),
 
-    addExpense: (groupId: string, description: string, amount: number, paidBy: string, splits: { userId: string, amount: number }[], splitType: 'EQUAL' | 'EXACT' | 'PERCENTAGE' = 'EQUAL'): Expense => {
-        const expenses = StorageService.getExpenses();
+    getGroupExpenses: (groupId: string): Expense[] =>
+        StorageService.getExpenses()
+            .filter(e => e.groupId === groupId)
+            .sort((a, b) => b.createdAt - a.createdAt),
+
+    addExpense: async (
+        groupId: string,
+        description: string,
+        amount: number,
+        paidBy: string,
+        splits: { userId: string; amount: number }[],
+        splitType: SplitType = "EQUAL"
+    ): Promise<Expense> => {
         const newExpense: Expense = {
             id: crypto.randomUUID(),
             groupId,
@@ -645,150 +442,80 @@ export const StorageService = {
             paidBy,
             splits,
             splitType,
-            createdAt: Date.now(),
+            createdAt: Date.now()
         };
+
+        const expenses = StorageService.getExpenses();
         expenses.push(newExpense);
         StorageService._save(K_EXPENSES, expenses);
 
-        // Sync trigger
-        const groups = StorageService.getGroups();
-        const group = groups.find(g => g.id === groupId);
-        if (group && group.storageType === 'SHEET') {
-            StorageService.syncToSheet(group);
-        }
-
+        await StorageService._post("SAVE_EXPENSE", newExpense);
         return newExpense;
     },
 
-    updateExpense: (updated: Expense) => {
+    updateExpense: async (updated: Expense): Promise<void> => {
         const expenses = StorageService.getExpenses();
         const index = expenses.findIndex(e => e.id === updated.id);
-        if (index !== -1) {
-            expenses[index] = updated;
-            StorageService._save(K_EXPENSES, expenses);
+        if (index === -1) return;
 
-            // Sync trigger
-            const groups = StorageService.getGroups();
-            const group = groups.find(g => g.id === updated.groupId);
-            if (group && group.storageType === 'SHEET') {
-                StorageService.syncToSheet(group);
-            }
-        }
-    },
-
-    deleteExpense: (expenseId: string) => {
-        let expenses = StorageService.getExpenses();
-        const target = expenses.find(e => e.id === expenseId);
-        expenses = expenses.filter(e => e.id !== expenseId);
+        expenses[index] = updated;
         StorageService._save(K_EXPENSES, expenses);
 
-        if (target) {
-            const groups = StorageService.getGroups();
-            const group = groups.find(g => g.id === target.groupId);
-            if (group && group.storageType === 'SHEET') {
-                StorageService.syncToSheet(group);
-            }
-        }
+        await StorageService._post("SAVE_EXPENSE", updated);
     },
 
-    getGroupExpenses: (groupId: string): Expense[] => {
-        const expenses = StorageService.getExpenses();
-        return expenses.filter(e => e.groupId === groupId).sort((a, b) => b.createdAt - a.createdAt);
+    deleteExpense: async (expenseId: string): Promise<void> => {
+        StorageService._save(K_EXPENSES, StorageService.getExpenses().filter(e => e.id !== expenseId));
+        await StorageService._post("DELETE_EXPENSE", { expenseId });
     },
 
-    addUserGroupToGlobalSheet: async (userId: string, groupId: string, groupLink?: string) => {
-        const sheetUrl = process.env.NEXT_PUBLIC_AUTH_SHEET_URL;
-        if (!sheetUrl) return;
+    // --- Sync ---
 
-        try {
-            await fetch(sheetUrl, {
-                method: "POST",
-                mode: "no-cors",
-                headers: { "Content-Type": "text/plain;charset=utf-8" },
-                body: JSON.stringify({
-                    action: "ADD_USER_GROUP",
-                    payload: { userId, groupId, groupLink }
-                })
-            });
-        } catch (e) {
-            console.error("Failed to sync user group to global sheet", e);
-        }
+    _markMigrated: (groupId: string) => {
+        const done = StorageService._get<string>(K_MIGRATED);
+        if (!done.includes(groupId)) StorageService._save(K_MIGRATED, [...done, groupId]);
     },
 
     /**
-     * Pulls the group links recorded against this account on the global auth sheet and
-     * materialises any group this device has never seen. This is what makes an account
-     * usable from a second device (or a phone browser) at all.
+     * Pulls everything this account can see in one round trip and replaces the local
+     * cache with it. This is what populates a device that has only just logged in,
+     * and what makes an invite sent from someone else's phone show up here.
      */
-    fetchUserGroups: async (userId: string): Promise<void> => {
-        const sheetUrl = process.env.NEXT_PUBLIC_AUTH_SHEET_URL;
-        if (!sheetUrl) return;
+    syncAll: async (userId: string): Promise<boolean> => {
+        const data = await StorageService._fetch({ action: "GET_USER_DATA", userId });
+        if (!data || data.status !== "success") return false;
 
-        let data: any;
-        try {
-            const res = await fetch(`${sheetUrl}?action=GET_USER_GROUPS&userId=${encodeURIComponent(userId)}`);
-            data = await res.json();
-        } catch (e) {
-            console.error("Failed to fetch user groups", e);
-            return;
-        }
+        const remoteGroups = (data.groups || []) as Group[];
+        const remoteExpenses = (data.expenses || []) as Expense[];
+        StorageService._cacheUsers((data.users || []) as { id: string; username: string }[]);
 
-        if (data.status !== "success" || !data.groupLinks) return;
+        const remoteIds = new Set(remoteGroups.map(g => g.id));
 
-        const links: Record<string, string> = data.groupLinks;
-        const localGroups = StorageService.getGroups();
-        const toSync: Group[] = [];
+        // Keep local groups the server doesn't know about only while they are still
+        // pending upload; anything already synced and now absent was deleted or left,
+        // so dropping it is correct.
+        const migrated = new Set(StorageService._get<string>(K_MIGRATED));
+        const local = StorageService.getGroups();
+        const unsynced = local.filter(g => !remoteIds.has(g.id) && !migrated.has(g.id));
 
-        for (const [gId, link] of Object.entries(links)) {
-            if (typeof link !== "string" || !link) continue;
+        StorageService._save(K_GROUPS, [...remoteGroups, ...unsynced]);
 
-            const existing = localGroups.find(g => g.id === gId);
-            if (existing) {
-                // Keep the link current, then refresh from the group's own sheet.
-                existing.storageType = "SHEET";
-                existing.connectionString = link;
-                toSync.push(existing);
-                continue;
-            }
+        // Expenses of groups we still hold locally survive; the rest are replaced.
+        const keptLocalIds = new Set(unsynced.map(g => g.id));
+        const localExpenses = StorageService.getExpenses().filter(e => keptLocalIds.has(e.groupId));
+        StorageService._save(K_EXPENSES, [...remoteExpenses, ...localExpenses]);
 
-            // A placeholder until the group's own sheet fills it in. members[] stays
-            // empty on purpose: membership is decided by the group sheet, and seeding
-            // it with this user would show a group they have only been invited to.
-            const stub: Group = {
-                id: gId,
-                name: "Loading...",
-                members: [],
-                pendingMembers: [],
-                joinRequests: [],
-                createdBy: "",
-                createdAt: Date.now(),
-                storageType: "SHEET",
-                connectionString: link
-            };
-            localGroups.push(stub);
-            toSync.push(stub);
-        }
+        // One-time upload of groups made before this device had a backend, so nothing
+        // created offline is stranded.
+        await Promise.all(unsynced.map(async g => {
+            if (!g.members.includes(userId)) return;
+            await StorageService._post("SAVE_GROUP", g);
+            await Promise.all(
+                StorageService.getGroupExpenses(g.id).map(e => StorageService._post("SAVE_EXPENSE", e))
+            );
+            StorageService._markMigrated(g.id);
+        }));
 
-        // Persist before syncing: syncFromSheet re-reads groups from localStorage and
-        // silently does nothing when the group isn't there yet.
-        StorageService._save(K_GROUPS, localGroups);
-
-        await Promise.all(toSync.map(g => StorageService.syncFromSheet(g)));
-    },
-
-    /**
-     * Refreshes everything this user can see: their group list from the auth sheet,
-     * then each sheet-backed group. Safe to call on every dashboard mount.
-     */
-    syncAll: async (userId: string): Promise<void> => {
-        await StorageService.fetchUserGroups(userId);
-
-        const relevant = StorageService.getGroups().filter(
-            g => g.storageType === "SHEET" &&
-                g.connectionString &&
-                (g.members.includes(userId) || g.pendingMembers?.includes(userId) || g.joinRequests?.includes(userId))
-        );
-
-        await Promise.all(relevant.map(g => StorageService.syncFromSheet(g)));
+        return true;
     }
 };

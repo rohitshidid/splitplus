@@ -17,53 +17,66 @@ export default function SignupPage() {
         setError("");
         try {
             await signup(username, password);
-        } catch (err: any) {
-            setError(err.message || "Failed to sign up");
-        } finally {
+        } catch (err) {
+            setError(err instanceof Error ? err.message : "Failed to sign up");
             setIsSubmitting(false);
         }
     };
 
     return (
-        <main className="container" style={{ display: "flex", justifyContent: "center", alignItems: "center", minHeight: "80vh" }}>
-            <div className="card" style={{ width: "100%", maxWidth: "400px" }}>
-                <h1 style={{ fontSize: "1.5rem", textAlign: "center", marginBottom: "1.5rem" }}>Create Account</h1>
+        <main className="auth-shell">
+            <div className="auth-card">
+                <Link href="/" className="brand" style={{ justifyContent: "center", marginBottom: 22 }}>
+                    <span className="brand-mark">S</span>
+                    Splitplus
+                </Link>
 
-                <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-                    <div>
-                        <label style={{ display: "block", marginBottom: "0.5rem", fontSize: "0.875rem", fontWeight: 500 }}>Username</label>
-                        <input
-                            type="text"
-                            className="input"
-                            value={username}
-                            onChange={(e) => setUsername(e.target.value)}
-                            required
-                            placeholder="e.g. bob"
-                        />
-                        <p style={{ fontSize: "0.75rem", color: "var(--muted)", marginTop: "0.25rem" }}>This is how friends will find you.</p>
-                    </div>
+                <div className="card">
+                    <h2 style={{ fontSize: "1.4rem", textAlign: "center" }}>Create your account</h2>
+                    <p className="muted" style={{ textAlign: "center", fontSize: ".9rem", marginTop: 6, marginBottom: 22 }}>
+                        A username and a password. That&apos;s the whole form.
+                    </p>
 
-                    <div>
-                        <label style={{ display: "block", marginBottom: "0.5rem", fontSize: "0.875rem", fontWeight: 500 }}>Password</label>
-                        <input
-                            type="password"
-                            className="input"
-                            value={password}
-                            onChange={(e) => setPassword(e.target.value)}
-                            required
-                            placeholder="••••••••"
-                        />
-                    </div>
+                    <form onSubmit={handleSubmit} className="stack-lg">
+                        <div className="field">
+                            <label className="label" htmlFor="username">Username</label>
+                            <input
+                                id="username"
+                                type="text"
+                                className="input"
+                                value={username}
+                                onChange={e => setUsername(e.target.value)}
+                                autoComplete="username"
+                                required
+                                placeholder="e.g. bob"
+                            />
+                            <p className="faint" style={{ fontSize: ".78rem" }}>This is how friends invite you to a group.</p>
+                        </div>
 
-                    {error && <p style={{ color: "var(--error)", fontSize: "0.875rem" }}>{error}</p>}
+                        <div className="field">
+                            <label className="label" htmlFor="password">Password</label>
+                            <input
+                                id="password"
+                                type="password"
+                                className="input"
+                                value={password}
+                                onChange={e => setPassword(e.target.value)}
+                                autoComplete="new-password"
+                                required
+                                placeholder="••••••••"
+                            />
+                        </div>
 
-                    <button type="submit" className="btn btn-primary" style={{ marginTop: "0.5rem" }} disabled={isSubmitting}>
-                        {isSubmitting ? "Creating Account..." : "Sign Up"}
-                    </button>
-                </form>
+                        {error && <p className="notice notice-error">{error}</p>}
 
-                <p style={{ marginTop: "1.5rem", textAlign: "center", fontSize: "0.875rem", color: "var(--muted)" }}>
-                    Already have an account? <Link href="/login" style={{ color: "var(--primary)", fontWeight: 500 }}>Login</Link>
+                        <button type="submit" className="btn btn-primary" disabled={isSubmitting}>
+                            {isSubmitting ? <><span className="spin" /> Creating account…</> : "Sign up"}
+                        </button>
+                    </form>
+                </div>
+
+                <p className="muted" style={{ marginTop: 20, textAlign: "center", fontSize: ".9rem" }}>
+                    Already have an account? <Link href="/login" style={{ fontWeight: 550 }}>Log in</Link>
                 </p>
             </div>
         </main>

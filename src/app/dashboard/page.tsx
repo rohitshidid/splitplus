@@ -1,199 +1,224 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { StorageService } from "@/services/StorageService";
-import { Group } from "@/types";
+import AppBar from "@/components/AppBar";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+
+const POLL_MS = 20_000;
 
 export default function DashboardPage() {
     const { user, loading } = useAuth();
     const router = useRouter();
-    const [groups, setGroups] = useState<Group[]>([]);
-    const [invites, setInvites] = useState<Group[]>([]);
+
     const [joinGroupId, setJoinGroupId] = useState("");
-    const [joinMsg, setJoinMsg] = useState("");
+    const [joinMsg, setJoinMsg] = useState<{ ok: boolean; text: string } | null>(null);
+    const [joining, setJoining] = useState(false);
     const [syncing, setSyncing] = useState(false);
     const [busyInvite, setBusyInvite] = useState<string | null>(null);
+    const [firstLoad, setFirstLoad] = useState(true);
 
-    const refreshData = () => {
-        if (user) {
-            setGroups(StorageService.getUserGroups(user.id));
-            setInvites(StorageService.getPendingInvites(user.id));
-        }
-    };
+    // Bumped whenever the cache behind the lists has changed. Deriving the lists
+    // during render (rather than mirroring them into state from an effect) keeps
+    // localStorage as the single source and avoids a render-then-correct flash.
+    const [revision, setRevision] = useState(0);
+    const refreshData = useCallback(() => setRevision(r => r + 1), []);
+
+    const userId = user?.id;
+    // `revision` is the cache-busting key, not a value the bodies read - the lint
+    // rule can't see that the real dependency is localStorage.
+    /* eslint-disable react-hooks/exhaustive-deps */
+    const groups = useMemo(
+        () => (userId ? StorageService.getUserGroups(userId) : []),
+        [userId, revision]
+    );
+    const invites = useMemo(
+        () => (userId ? StorageService.getPendingInvites(userId) : []),
+        [userId, revision]
+    );
+    /* eslint-enable react-hooks/exhaustive-deps */
+
+    // A ref so the poll interval always calls the current closure without having to
+    // tear itself down and resubscribe on every render.
+    const syncRef = useRef<() => Promise<void>>(async () => {});
+    useEffect(() => {
+        syncRef.current = async () => {
+            if (!userId) return;
+            setSyncing(true);
+            await StorageService.syncAll(userId);
+            setSyncing(false);
+            setFirstLoad(false);
+            refreshData();
+        };
+    });
 
     useEffect(() => {
         if (!loading && !user) {
             router.push("/login");
             return;
         }
-        if (!user) return;
+        if (!userId) return;
 
-        refreshData();
+        syncRef.current();
 
-        // Invites arrive from another person's device, so the local copy is always
-        // stale until we pull. This is also what populates a device that has only
-        // just logged in.
-        let cancelled = false;
-        setSyncing(true);
-        StorageService.syncAll(user.id).finally(() => {
-            if (cancelled) return;
-            setSyncing(false);
-            refreshData();
-        });
+        // Invites are sent from someone else's device, so the only way one "pops up"
+        // here is to keep asking. Paused while the tab is hidden.
+        const id = setInterval(() => {
+            if (document.visibilityState === "visible") syncRef.current();
+        }, POLL_MS);
 
-        return () => { cancelled = true; };
-    }, [user, loading, router]);
+        const onVisible = () => { if (document.visibilityState === "visible") syncRef.current(); };
+        document.addEventListener("visibilitychange", onVisible);
+
+        return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVisible); };
+    }, [userId, user, loading, router, refreshData]);
 
     const handleJoinRequest = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!joinGroupId.trim() || !user) return;
+        if (!joinGroupId.trim() || !userId) return;
 
-        // Check if valid group
-        const allGroups = StorageService.getGroups();
-        const target = allGroups.find(g => g.id === joinGroupId.trim() || (joinGroupId.trim().length >= 6 && g.id.startsWith(joinGroupId.trim())));
-
-        if (!target) {
-            setJoinMsg("Group not found on this device. Ask an admin to invite you by username instead.");
-            return;
-        }
-        if (target.members.includes(user.id)) {
-            setJoinMsg("You are already in this group.");
-            return;
-        }
-        if (target.joinRequests?.includes(user.id)) {
-            setJoinMsg("Request already sent.");
-            return;
-        }
-
-        await StorageService.requestJoin(target.id, user.id);
-        setJoinMsg("Request sent to admin!");
-        setJoinGroupId("");
-    };
-
-    const handleAccept = async (groupId: string) => {
-        if (!user) return;
-        setBusyInvite(groupId);
-        await StorageService.acceptInvite(groupId, user.id);
-        setBusyInvite(null);
+        setJoining(true);
+        setJoinMsg(null);
+        const result = await StorageService.requestJoin(joinGroupId.trim(), userId);
+        setJoinMsg({ ok: result.ok, text: result.message });
+        if (result.ok) setJoinGroupId("");
+        setJoining(false);
         refreshData();
     };
 
-    const handleDecline = async (groupId: string) => {
-        if (!user) return;
+    const handleInviteAction = async (groupId: string, accept: boolean) => {
+        if (!userId) return;
         setBusyInvite(groupId);
-        await StorageService.declineInvite(groupId, user.id);
+        if (accept) await StorageService.acceptInvite(groupId, userId);
+        else await StorageService.declineInvite(groupId, userId);
         setBusyInvite(null);
         refreshData();
     };
 
     if (loading || !user) return null;
 
-    // Calculate total balance
-    // Note: accurate balance requires summing up all balances across all groups.
-    // For this simplified view, we might skip it or compute it if needed.
-    // Let's keep it simple for now.
-
     return (
-        <div className="container" style={{ padding: "2rem 1rem" }}>
-            <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "2rem" }}>
-                <div>
-                    <h1 style={{ fontSize: "2rem", marginBottom: "0.5rem" }}>Hi, {user.username} 👋</h1>
-                    <p style={{ color: "var(--muted)" }}>Welcome back to Splitplus</p>
-                </div>
-                <Link href="/profile" className="btn" style={{ background: "var(--card-bg)", color: "var(--foreground)", border: "1px solid var(--card-border)" }}>
-                    Profile
-                </Link>
-            </header>
+        <>
+            <AppBar
+                right={
+                    <>
+                        {syncing && <span className="faint" style={{ fontSize: ".78rem" }}>syncing…</span>}
+                        <Link href="/profile" className="btn btn-outline btn-sm">Profile</Link>
+                    </>
+                }
+            />
 
-            {/* Pending Invites: the only place an invited user is told about a group */}
-            {invites.length > 0 && (
-                <section style={{ marginBottom: "2rem", padding: "1.5rem", background: "var(--card-bg)", borderRadius: "var(--radius)", border: "1px solid var(--primary)" }}>
-                    <h3 style={{ fontSize: "1rem", marginBottom: "1rem", color: "var(--primary)" }}>
-                        Group invites 🔔 ({invites.length})
-                    </h3>
-                    <div style={{ display: "grid", gap: "0.75rem" }}>
-                        {invites.map(g => (
-                            <div key={g.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "1rem", flexWrap: "wrap" }}>
-                                <span>
-                                    <strong>{g.name}</strong>
-                                    <span style={{ color: "var(--muted)", fontSize: "0.875rem" }}> invited you to join</span>
-                                </span>
-                                <div style={{ display: "flex", gap: "0.5rem" }}>
-                                    <button
-                                        onClick={() => handleAccept(g.id)}
-                                        className="btn btn-primary"
-                                        style={{ padding: "0.35rem 0.9rem", fontSize: "0.8125rem" }}
-                                        disabled={busyInvite === g.id}
-                                    >
-                                        {busyInvite === g.id ? "..." : "Accept"}
-                                    </button>
-                                    <button
-                                        onClick={() => handleDecline(g.id)}
-                                        className="btn"
-                                        style={{ padding: "0.35rem 0.9rem", fontSize: "0.8125rem", background: "var(--muted-light)" }}
-                                        disabled={busyInvite === g.id}
-                                    >
-                                        Decline
-                                    </button>
+            <main className="container page">
+                <header className="page-head">
+                    <h1>Hi, {user.username} 👋</h1>
+                    <p className="muted" style={{ marginTop: 6 }}>Here&apos;s where everything stands.</p>
+                </header>
+
+                {/* Pending invites: the only place an invited user is told about a group */}
+                {invites.length > 0 && (
+                    <section className="card card-accent" style={{ marginBottom: 22 }}>
+                        <div className="row" style={{ marginBottom: 14 }}>
+                            <span className="eyebrow">Invites</span>
+                            <span className="pill pill-green">{invites.length} waiting</span>
+                        </div>
+                        <div className="stack">
+                            {invites.map(g => (
+                                <div key={g.id} className="row-between wrap">
+                                    <div className="row">
+                                        <span className="avatar">{g.name.charAt(0).toUpperCase()}</span>
+                                        <span>
+                                            <strong>{g.name}</strong>
+                                            <span className="faint" style={{ display: "block", fontSize: ".8rem" }}>
+                                                {g.members.length} member{g.members.length === 1 ? "" : "s"} already in
+                                            </span>
+                                        </span>
+                                    </div>
+                                    <div className="row">
+                                        <button
+                                            className="btn btn-primary btn-sm"
+                                            onClick={() => handleInviteAction(g.id, true)}
+                                            disabled={busyInvite === g.id}
+                                        >
+                                            {busyInvite === g.id ? <span className="spin" /> : "Accept"}
+                                        </button>
+                                        <button
+                                            className="btn btn-ghost btn-sm"
+                                            onClick={() => handleInviteAction(g.id, false)}
+                                            disabled={busyInvite === g.id}
+                                        >
+                                            Decline
+                                        </button>
+                                    </div>
                                 </div>
-                            </div>
-                        ))}
-                    </div>
-                </section>
-            )}
-
-            {/* Join Group Section */}
-            <section style={{ marginBottom: "2rem", padding: "1.5rem", background: "var(--card-bg)", borderRadius: "var(--radius)", border: "1px solid var(--card-border)" }}>
-                <h3 style={{ fontSize: "1rem", marginBottom: "1rem" }}>Join an existing group</h3>
-                <form onSubmit={handleJoinRequest} style={{ display: "flex", gap: "0.5rem" }}>
-                    <input
-                        className="input"
-                        placeholder="Enter Group ID"
-                        value={joinGroupId}
-                        onChange={e => setJoinGroupId(e.target.value)}
-                        style={{ flex: 1 }}
-                    />
-                    <button type="submit" className="btn btn-primary">Join</button>
-                </form>
-                {joinMsg && <p style={{ marginTop: "0.5rem", fontSize: "0.875rem", color: joinMsg.includes("sent") ? "var(--success)" : "var(--error)" }}>{joinMsg}</p>}
-            </section>
-
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
-                <h2 style={{ fontSize: "1.5rem" }}>
-                    Your Groups
-                    {syncing && <span style={{ fontSize: "0.8125rem", color: "var(--muted)", fontWeight: 400, marginLeft: "0.5rem" }}>syncing…</span>}
-                </h2>
-                <Link href="/groups/create" className="btn btn-primary">
-                    + New Group
-                </Link>
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "1.5rem" }}>
-                {groups.length === 0 ? (
-                    <div style={{ gridColumn: "1/-1", textAlign: "center", padding: "3rem", color: "var(--muted)", background: "var(--muted-light)", borderRadius: "var(--radius)" }}>
-                        {syncing ? (
-                            <p>Loading your groups…</p>
-                        ) : (
-                            <>
-                                <p>You haven&apos;t joined any groups yet.</p>
-                                <Link href="/groups/create" style={{ color: "var(--primary)", textDecoration: "underline" }}>Create one now</Link>
-                            </>
-                        )}
-                    </div>
-                ) : (
-                    groups.map(group => (
-                        <Link href={`/groups/view?id=${group.id}`} key={group.id} style={{ textDecoration: "none" }}>
-                            <div className="card h-full hover-card">
-                                <h3 style={{ fontSize: "1.25rem", marginBottom: "0.5rem" }}>{group.name}</h3>
-                                <p style={{ color: "var(--muted)", fontSize: "0.875rem" }}>{group.members.length} Members</p>
-                            </div>
-                        </Link>
-                    ))
+                            ))}
+                        </div>
+                    </section>
                 )}
-            </div>
-        </div>
+
+                <div className="row-between" style={{ marginBottom: 14 }}>
+                    <h2 style={{ fontSize: "1.35rem" }}>Your groups</h2>
+                    <Link href="/groups/create" className="btn btn-primary btn-sm">+ New group</Link>
+                </div>
+
+                <div className="stack" style={{ marginBottom: 30 }}>
+                    {groups.length === 0 ? (
+                        <div className="empty">
+                            {firstLoad && syncing ? (
+                                <p><span className="spin" style={{ verticalAlign: "-2px", marginRight: 8 }} /> Loading your groups…</p>
+                            ) : (
+                                <>
+                                    <p>No groups yet.</p>
+                                    <p style={{ marginTop: 8 }}>
+                                        <Link href="/groups/create">Create one</Link> — or ask a friend to invite you by username.
+                                    </p>
+                                </>
+                            )}
+                        </div>
+                    ) : (
+                        groups.map(g => (
+                            <Link href={`/groups/view?id=${g.id}`} key={g.id} style={{ color: "inherit" }}>
+                                <div className="card card-tight card-hover row">
+                                    <span className="avatar">{g.name.charAt(0).toUpperCase()}</span>
+                                    <span className="grow">
+                                        <span style={{ fontWeight: 600, display: "block" }}>{g.name}</span>
+                                        <span className="faint" style={{ fontSize: ".8rem" }}>
+                                            {g.members.length} member{g.members.length === 1 ? "" : "s"}
+                                            {g.pendingMembers.length > 0 && ` · ${g.pendingMembers.length} invited`}
+                                            {g.createdBy === user.id && " · you're the admin"}
+                                        </span>
+                                    </span>
+                                    <span className="faint">→</span>
+                                </div>
+                            </Link>
+                        ))
+                    )}
+                </div>
+
+                <section className="card">
+                    <h3 style={{ fontSize: "1rem" }}>Join with a group ID</h3>
+                    <p className="faint" style={{ fontSize: ".84rem", margin: "6px 0 14px" }}>
+                        Paste an ID someone sent you. The admin gets a request to approve.
+                    </p>
+                    <form onSubmit={handleJoinRequest} className="row">
+                        <input
+                            className="input grow"
+                            placeholder="Group ID"
+                            value={joinGroupId}
+                            onChange={e => setJoinGroupId(e.target.value)}
+                        />
+                        <button type="submit" className="btn btn-outline" disabled={joining}>
+                            {joining ? <span className="spin" /> : "Join"}
+                        </button>
+                    </form>
+                    {joinMsg && (
+                        <p className={`notice ${joinMsg.ok ? "notice-ok" : "notice-error"}`} style={{ marginTop: 10 }}>
+                            {joinMsg.text}
+                        </p>
+                    )}
+                </section>
+            </main>
+        </>
     );
 }

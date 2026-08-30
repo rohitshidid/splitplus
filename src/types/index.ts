@@ -1,7 +1,7 @@
 export interface User {
     id: string;
     username: string;
-    password: string; // Plain text/simulated for MVP
+    password: string; // SHA-256 hash; blank on stub records pulled from the sheet
     createdAt: number;
 }
 
@@ -14,8 +14,6 @@ export interface Group {
     image?: string; // Optional group icon
     createdBy: string; // Admin ID
     createdAt: number;
-    storageType: 'LOCAL' | 'SHEET';
-    connectionString?: string; // GAS Web App URL
 }
 
 export type SplitType = 'EQUAL' | 'EXACT' | 'PERCENTAGE';
@@ -26,7 +24,6 @@ export interface Expense {
     description: string;
     amount: number;
     paidBy: string; // User ID
-    // splitAmong: string[]; // DEPRECATED
     splits: { userId: string; amount: number }[]; // Explicit amount per user
     splitType: SplitType;
     createdAt: number;
