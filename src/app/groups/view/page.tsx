@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, Suspense } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { StorageService } from "@/services/StorageService";
-import { Group, Expense, User, SplitType } from "@/types";
+import { Group, Expense, ExpenseSplit, User, SplitType } from "@/types";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import AppBar from "@/components/AppBar";
@@ -32,6 +32,9 @@ function GroupView() {
     const [splitInputs, setSplitInputs] = useState<Record<string, string>>({});
     const [error, setError] = useState("");
     const [saving, setSaving] = useState(false);
+
+    const [openExpense, setOpenExpense] = useState<string | null>(null);
+    const [settling, setSettling] = useState<string | null>(null);
 
     const [inviteName, setInviteName] = useState("");
     const [inviteMsg, setInviteMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -84,13 +87,19 @@ function GroupView() {
     }, [userId, user, loading, router, refreshData]);
 
     // Compute balances: what each member is up (paid more than their share) or down.
+    //
+    // Walked share by share rather than "payer gets the whole total back", because a
+    // settled share has to leave both sides at once - the debtor stops owing it and
+    // the payer stops being owed it. Anything else would leave the books unbalanced.
     const balances = useMemo(() => {
         const bal: Record<string, number> = {};
         members.forEach(m => { bal[m.id] = 0; });
 
         expenses.forEach(e => {
-            bal[e.paidBy] = (bal[e.paidBy] || 0) + e.amount;
             (e.splits || []).forEach(s => {
+                if (s.settled) return;          // squared up: neither side is exposed
+                if (s.userId === e.paidBy) return; // nobody owes themselves
+                bal[e.paidBy] = (bal[e.paidBy] || 0) + s.amount;
                 bal[s.userId] = (bal[s.userId] || 0) - s.amount;
             });
         });
@@ -101,6 +110,20 @@ function GroupView() {
     const totalTracked = useMemo(
         () => expenses.reduce((sum, e) => sum + e.amount, 0),
         [expenses]
+    );
+
+    /** Shares that can be settled at all - the payer's own share is never a debt. */
+    const owedShares = useCallback(
+        (e: Expense) => (e.splits || []).filter(s => s.userId !== e.paidBy),
+        []
+    );
+
+    const outstanding = useMemo(
+        () => expenses.reduce(
+            (sum, e) => sum + owedShares(e).filter(s => !s.settled).reduce((n, s) => n + s.amount, 0),
+            0
+        ),
+        [expenses, owedShares]
     );
 
     const handleInvite = async () => {
@@ -196,7 +219,7 @@ function GroupView() {
             return;
         }
 
-        let splits: { userId: string; amount: number }[] = [];
+        let splits: ExpenseSplit[] = [];
 
         if (splitType === "EQUAL") {
             // Distribute cents so the shares always add back up to the total exactly.
@@ -236,12 +259,21 @@ function GroupView() {
         if (editingId) {
             const existing = expenses.find(e => e.id === editingId);
             if (existing) {
+                // Carry settled shares across the edit, but only where the amount is
+                // unchanged: if what someone owes moved, what they settled no longer
+                // covers it, so that share goes back to outstanding.
+                const carried = splits.map(sp => {
+                    const before = existing.splits?.find(o => o.userId === sp.userId);
+                    if (!before?.settled || Math.abs(before.amount - sp.amount) > 0.005) return sp;
+                    return { ...sp, settled: true, settledAt: before.settledAt };
+                });
+
                 await StorageService.updateExpense({
                     ...existing,
                     description: desc.trim(),
                     amount: total,
                     paidBy,
-                    splits,
+                    splits: carried,
                     splitType
                 });
             }
@@ -251,6 +283,14 @@ function GroupView() {
         setSaving(false);
 
         resetForm();
+        refreshData();
+    };
+
+    const handleToggleShare = async (expenseId: string, memberId: string, settled: boolean) => {
+        const key = `${expenseId}:${memberId}`;
+        setSettling(key);
+        await StorageService.setShareSettled(expenseId, memberId, settled);
+        setSettling(null);
         refreshData();
     };
 
@@ -393,7 +433,14 @@ function GroupView() {
                 {/* Expenses */}
                 <section style={{ marginBottom: 30 }}>
                     <div className="row-between" style={{ marginBottom: 12 }}>
-                        <h2 style={{ fontSize: "1.2rem" }}>Expenses</h2>
+                        <h2 style={{ fontSize: "1.2rem" }}>
+                            Expenses
+                            {expenses.length > 0 && (
+                                <span className="faint" style={{ fontSize: ".8rem", fontWeight: 400, marginLeft: 8 }}>
+                                    {outstanding > 0.005 ? `${money(outstanding)} outstanding` : "all settled"}
+                                </span>
+                            )}
+                        </h2>
                         <button
                             onClick={() => { if (isAdding) resetForm(); else { resetForm(); setIsAdding(true); } }}
                             className="btn btn-primary btn-sm"
@@ -479,15 +526,82 @@ function GroupView() {
                                 const payer = members.find(m => m.id === e.paidBy)?.username || "Someone";
                                 const label = e.splitType === "EQUAL" ? "split equally"
                                     : e.splitType === "EXACT" ? "exact amounts" : "by percentage";
+
+                                const owed = owedShares(e);
+                                const settledCount = owed.filter(s => s.settled).length;
+                                const fullySettled = owed.length > 0 && settledCount === owed.length;
+                                const open = openExpense === e.id;
+
                                 return (
-                                    <div key={e.id} className="card card-tight row">
-                                        <span className="grow">
-                                            <span style={{ fontWeight: 550, display: "block" }}>{e.description}</span>
-                                            <span className="faint" style={{ fontSize: ".78rem" }}>{payer} paid · {label}</span>
-                                        </span>
-                                        <span className="tnum" style={{ fontWeight: 600 }}>{money(e.amount)}</span>
-                                        <button onClick={() => populateForm(e)} className="link-btn" title="Edit" style={{ textDecoration: "none", fontSize: "1.05rem" }}>✎</button>
-                                        <button onClick={() => handleDeleteExpense(e.id)} className="link-btn" title="Delete" style={{ textDecoration: "none", fontSize: "1.05rem", color: "var(--red)" }}>🗑</button>
+                                    <div key={e.id} className={`card card-tight expense ${fullySettled ? "is-settled" : ""}`}>
+                                        <div className="row">
+                                            <button
+                                                type="button"
+                                                className="expense-open grow"
+                                                onClick={() => setOpenExpense(open ? null : e.id)}
+                                                aria-expanded={open}
+                                            >
+                                                <span className="expense-title">{e.description}</span>
+                                                <span className="faint" style={{ fontSize: ".78rem", display: "block" }}>
+                                                    {payer} paid · {label}
+                                                    {owed.length > 0 && (
+                                                        <> · {settledCount}/{owed.length} settled</>
+                                                    )}
+                                                </span>
+                                            </button>
+
+                                            {fullySettled && <span className="pill pill-green">Settled</span>}
+                                            <span className="tnum expense-amt" style={{ fontWeight: 600 }}>{money(e.amount)}</span>
+                                            <button
+                                                type="button"
+                                                onClick={() => setOpenExpense(open ? null : e.id)}
+                                                className="link-btn caret"
+                                                aria-label={open ? "Hide shares" : "Show shares"}
+                                                style={{ textDecoration: "none" }}
+                                            >
+                                                {open ? "▴" : "▾"}
+                                            </button>
+                                        </div>
+
+                                        {open && (
+                                            <div className="shares">
+                                                {owed.length === 0 ? (
+                                                    <p className="faint" style={{ fontSize: ".82rem" }}>
+                                                        {payer} covered this alone — there&apos;s nothing to settle.
+                                                    </p>
+                                                ) : (
+                                                    owed.map(sp => {
+                                                        const who = members.find(m => m.id === sp.userId);
+                                                        const busy = settling === `${e.id}:${sp.userId}`;
+                                                        return (
+                                                            <div key={sp.userId} className={`share ${sp.settled ? "is-settled" : ""}`}>
+                                                                <span className="avatar" style={{ width: 24, height: 24, fontSize: ".7rem" }}>
+                                                                    {(who?.username || "?").charAt(0).toUpperCase()}
+                                                                </span>
+                                                                <span className="grow" style={{ fontSize: ".88rem" }}>
+                                                                    {who?.username || "Former member"}
+                                                                    {sp.userId === user.id && <span className="faint"> (you)</span>}
+                                                                </span>
+                                                                <span className="tnum share-amt">{money(sp.amount)}</span>
+                                                                <button
+                                                                    type="button"
+                                                                    className={`btn btn-sm ${sp.settled ? "btn-ghost" : "btn-primary"}`}
+                                                                    onClick={() => handleToggleShare(e.id, sp.userId, !sp.settled)}
+                                                                    disabled={busy}
+                                                                >
+                                                                    {busy ? <span className="spin" /> : sp.settled ? "Undo" : "Settle"}
+                                                                </button>
+                                                            </div>
+                                                        );
+                                                    })
+                                                )}
+
+                                                <div className="row" style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--line-soft)" }}>
+                                                    <button onClick={() => populateForm(e)} className="btn btn-ghost btn-sm">Edit</button>
+                                                    <button onClick={() => handleDeleteExpense(e.id)} className="btn btn-danger btn-sm">Delete</button>
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
                                 );
                             })

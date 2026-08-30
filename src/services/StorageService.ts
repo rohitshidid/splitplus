@@ -1,6 +1,6 @@
 "use client";
 
-import { User, Group, Expense, SplitType } from "../types";
+import { User, Group, Expense, ExpenseSplit, SplitType } from "../types";
 
 // Keys for LocalStorage. Local storage is a cache and an offline buffer only -
 // the Apps Script sheet is the source of truth, which is what lets the same
@@ -431,7 +431,7 @@ export const StorageService = {
         description: string,
         amount: number,
         paidBy: string,
-        splits: { userId: string; amount: number }[],
+        splits: ExpenseSplit[],
         splitType: SplitType = "EQUAL"
     ): Promise<Expense> => {
         const newExpense: Expense = {
@@ -462,6 +462,39 @@ export const StorageService = {
         StorageService._save(K_EXPENSES, expenses);
 
         await StorageService._post("SAVE_EXPENSE", updated);
+    },
+
+    /**
+     * Marks one person's share of one expense as squared up (or puts it back).
+     *
+     * Stored on the split itself rather than as a separate settlement record, so it
+     * travels with the expense through the sheet without a schema change - the
+     * script stores splits as opaque JSON.
+     */
+    setShareSettled: async (expenseId: string, userId: string, settled: boolean): Promise<boolean> => {
+        const expenses = StorageService.getExpenses();
+        const index = expenses.findIndex(e => e.id === expenseId);
+        if (index === -1) return false;
+
+        const expense = expenses[index];
+        const target = expense.splits?.find(sp => sp.userId === userId);
+        if (!target) return false;
+        if (Boolean(target.settled) === settled) return true; // Already there.
+
+        const updated: Expense = {
+            ...expense,
+            splits: expense.splits.map(sp =>
+                sp.userId === userId
+                    ? { ...sp, settled, settledAt: settled ? Date.now() : undefined }
+                    : sp
+            )
+        };
+
+        expenses[index] = updated;
+        StorageService._save(K_EXPENSES, expenses);
+
+        const res = await StorageService._post("SAVE_EXPENSE", updated);
+        return !SHEET_URL || res?.status === "success";
     },
 
     deleteExpense: async (expenseId: string): Promise<void> => {

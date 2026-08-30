@@ -18,13 +18,25 @@ export interface Group {
 
 export type SplitType = 'EQUAL' | 'EXACT' | 'PERCENTAGE';
 
+export interface ExpenseSplit {
+    userId: string;
+    amount: number;
+    /**
+     * True once this person has squared up with the payer for their share. A settled
+     * share drops out of the balances on both sides: the debtor no longer owes it,
+     * and the payer is no longer owed it.
+     */
+    settled?: boolean;
+    settledAt?: number;
+}
+
 export interface Expense {
     id: string;
     groupId: string;
     description: string;
     amount: number;
     paidBy: string; // User ID
-    splits: { userId: string; amount: number }[]; // Explicit amount per user
+    splits: ExpenseSplit[]; // Explicit amount per user
     splitType: SplitType;
     createdAt: number;
 }

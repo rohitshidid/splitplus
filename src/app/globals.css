@@ -288,6 +288,34 @@ code, .mono { font-family: var(--mono); }
   .reveal { opacity: 1; transform: none; transition: none; }
 }
 
+/* --------------------------------------------------------------- expenses */
+.expense { transition: opacity .25s ease, border-color .25s ease; }
+/* A fully settled bill stays exactly where it is in the timeline, just quieter -
+   so the history still reads in order and undoing is where you expect it. */
+.expense.is-settled { opacity: .62; border-color: var(--line-soft); }
+.expense.is-settled .expense-title { text-decoration: line-through; text-decoration-color: var(--ink-faint); }
+.expense.is-settled .expense-amt { color: var(--ink-faint); }
+
+.expense-open {
+  background: none; border: 0; padding: 0; margin: 0;
+  font: inherit; color: inherit; text-align: left; cursor: pointer;
+}
+.expense-title { font-weight: 550; display: block; }
+.expense .caret { color: var(--ink-faint); font-size: .95rem; width: 18px; text-align: center; }
+
+.shares {
+  margin-top: 12px; padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+  display: grid; gap: 4px;
+}
+.share {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 0;
+}
+.share-amt { font-weight: 600; font-size: .88rem; min-width: 72px; text-align: right; }
+.share.is-settled .share-amt { color: var(--ink-faint); text-decoration: line-through; }
+.share.is-settled { opacity: .7; }
+
 /* --------------------------------------------------------------- landing */
 /* The marketing page is one bright design on purpose - the same decision as
    the other project pages. Redefining the tokens on the wrapper (rather than
