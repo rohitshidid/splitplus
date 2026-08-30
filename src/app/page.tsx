@@ -56,8 +56,8 @@ export default function Home() {
           <h1 className="reveal" style={S(1)}>Split the bill. Keep the friendship.</h1>
           <p className="lede reveal" style={S(2)}>
             Splitplus is a <strong>shared expense tracker</strong> for a trip, a flat, or a group of
-            friends. Log who paid for what, split it however you actually split it, and it tells
-            everyone exactly who owes whom — <strong>on every device, at the same time</strong>.
+            friends — where <strong>your data lives in a Google Sheet you own</strong>. Log who paid for what,
+            split it however you actually split it, and it tells everyone exactly who owes whom — <strong>on every device, at the same time</strong>.
           </p>
           <div className="hero-cta reveal" style={S(3)}>
             <Link href="/signup" className="btn btn-primary btn-lg">
@@ -66,7 +66,7 @@ export default function Home() {
             <Link href="/login" className="btn btn-ghost btn-lg">I already have one</Link>
           </div>
           <p className="hero-note reveal" style={S(4)}>
-            Free · nothing to install · your data lives in a Google Sheet you own
+            Free · nothing to install · <strong>your data lives in a Google Sheet you own</strong>
           </p>
 
           <div className="stage reveal" style={S(5)}>
