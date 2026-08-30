@@ -199,6 +199,87 @@ export const StorageService = {
         localStorage.removeItem(K_CURRENT_USER);
     },
 
+    /**
+     * Permanently deletes an account and frees its username.
+     *
+     * Requires the account's own password: this runs from the login page, where
+     * nobody is authenticated yet. Group memberships and expenses are deliberately
+     * left intact so other members' balances do not shift; the departed user simply
+     * stops resolving to a name.
+     */
+    deleteAccount: async (username: string, password: string): Promise<void> => {
+        const sheetUrl = process.env.NEXT_PUBLIC_AUTH_SHEET_URL;
+        const hashedPassword = await StorageService.hashPassword(password);
+        let deletedId: string;
+
+        if (sheetUrl) {
+            let data: any;
+            try {
+                const res = await fetch(sheetUrl, {
+                    method: "POST",
+                    headers: { "Content-Type": "text/plain;charset=utf-8" },
+                    body: JSON.stringify({
+                        action: "DELETE_ACCOUNT",
+                        payload: { username, password: hashedPassword }
+                    })
+                });
+                data = await res.json();
+            } catch (e) {
+                // Deliberately do NOT fall back to a local-only delete: the sheet row
+                // would survive, keeping the username taken everywhere while the
+                // account vanished from this device.
+                console.error("Delete request to auth sheet failed", e);
+                throw new Error(UNREACHABLE_SHEET_MSG);
+            }
+
+            if (data.status !== "success" || !data.user) {
+                throw new Error(data.message || "Invalid credentials");
+            }
+            deletedId = data.user.id;
+        } else {
+            const local = StorageService.findUserByUsername(username);
+            if (!local || (local.password !== hashedPassword && local.password !== password)) {
+                throw new Error("Invalid credentials");
+            }
+            deletedId = local.id;
+        }
+
+        StorageService._purgeLocalUser(deletedId);
+    },
+
+    /** Local cleanup after the account record itself is gone. */
+    _purgeLocalUser: (userId: string) => {
+        // Hand any group this user created to the longest-standing remaining member,
+        // so approve/reject powers stay reachable. members[] is append-ordered with
+        // the creator first, making the first survivor the longest-standing one.
+        const groups = StorageService.getGroups();
+        const reassigned: Group[] = [];
+
+        groups.forEach(g => {
+            if (g.createdBy !== userId) return;
+            const heir = g.members.find(id => id !== userId);
+            if (!heir) return; // Sole member: nothing to hand off to.
+            g.createdBy = heir;
+            reassigned.push(g);
+        });
+
+        if (reassigned.length > 0) {
+            StorageService._save(K_GROUPS, groups);
+            // Push the new admin out before dropping the local user record, so the
+            // group's Members tab keeps their real username rather than a placeholder.
+            reassigned.forEach(g => {
+                if (g.storageType === "SHEET") StorageService.syncToSheet(g);
+            });
+        }
+
+        const remaining = StorageService.getUsers().filter(u => u.id !== userId);
+        StorageService._save(K_USERS, remaining);
+
+        if (localStorage.getItem(K_CURRENT_USER) === userId) {
+            localStorage.removeItem(K_CURRENT_USER);
+        }
+    },
+
     getCurrentUser: (): User | null => {
         if (typeof window === "undefined") return null;
         const id = localStorage.getItem(K_CURRENT_USER);

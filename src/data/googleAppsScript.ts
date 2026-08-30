@@ -96,6 +96,8 @@ function doPost(e) {
             return loginUser(data.payload);
         } else if (action === "ADD_USER_GROUP") {
             return addUserGroup(data.payload);
+        } else if (action === "DELETE_ACCOUNT") {
+            return deleteAccount(data.payload);
         }
 
         return response({ status: "error", message: "Invalid action" });
@@ -223,6 +225,41 @@ function loginUser(creds) {
     } else {
         return response({ status: "error", message: "Invalid credentials" });
     }
+}
+
+function deleteAccount(creds) {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName("Users");
+    if (!sheet) return response({ status: "error", message: "Users sheet missing" });
+
+    const data = sheet.getDataRange().getValues();
+    let idCol = -1, userCol = -1, passCol = -1;
+    data[0].forEach((h, i) => {
+        if (h === "id") idCol = i;
+        if (h === "username") userCol = i;
+        if (h === "password") passCol = i;
+    });
+
+    if (idCol === -1 || userCol === -1 || passCol === -1) {
+        return response({ status: "error", message: "Schema mismatch (missing columns)" });
+    }
+
+    for (let i = 1; i < data.length; i++) {
+        if (data[i][userCol] === creds.username) {
+            // Deletion is irreversible and frees the username for anyone to claim,
+            // so an unauthenticated caller must never be able to delete someone else.
+            if (data[i][passCol] !== creds.password) {
+                return response({ status: "error", message: "Invalid credentials" });
+            }
+            const deletedId = data[i][idCol];
+            sheet.deleteRow(i + 1);
+            return response({ status: "success", user: { id: deletedId, username: creds.username } });
+        }
+    }
+
+    // Same message as a wrong password, so this cannot be used to probe which
+    // usernames exist.
+    return response({ status: "error", message: "Invalid credentials" });
 }
 
 function addUserGroup(payload) {
