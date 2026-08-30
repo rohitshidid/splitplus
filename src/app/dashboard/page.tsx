@@ -118,7 +118,7 @@ export default function DashboardPage() {
                     </div>
                 ) : (
                     groups.map(group => (
-                        <Link href={`/groups/${group.id}`} key={group.id} style={{ textDecoration: "none" }}>
+                        <Link href={`/groups/view?id=${group.id}`} key={group.id} style={{ textDecoration: "none" }}>
                             <div className="card h-full hover-card">
                                 <h3 style={{ fontSize: "1.25rem", marginBottom: "0.5rem" }}>{group.name}</h3>
                                 <p style={{ color: "var(--muted)", fontSize: "0.875rem" }}>{group.members.length} Members</p>
